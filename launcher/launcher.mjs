@@ -162,10 +162,37 @@ async function waitForMount(ctx, timeoutMs = 15000) {
   return false;
 }
 
-async function sessionLoop() {
+async function isZCodeProcessRunning() {
+  return listRunningZCodePids().length > 0;
+}
+
+/** Poll until at least one ZCode.exe is running, or timeoutMs elapses.
+ *  Used by --watch mode to wait for the user to open ZCode. */
+async function waitForZCodeProcess(timeoutMs = Infinity) {
+  const start = Date.now();
+  let dots = 0;
+  while (Date.now() - start < timeoutMs) {
+    if (await isZCodeProcessRunning()) return true;
+    dots = (dots + 1) % 4;
+    process.stdout.write(`\r[watch] waiting for ZCode.exe to start${'.'.repeat(dots + 1)}   `);
+    await delay(1500);
+  }
+  return false;
+}
+
+async function sessionLoop({ watch = false } = {}) {
   let attempt = 0;
   // eslint-disable-next-line no-constant-condition
   while (true) {
+    // In watch mode, if ZCode isn't running, wait indefinitely for it.
+    // When ZCode exits mid-session, the inner attach will fail and we'll
+    // come back here to wait for the next launch.
+    if (watch && !(await isZCodeProcessRunning())) {
+      log('[watch] ZCode not running; waiting for next launch...');
+      await waitForZCodeProcess();
+      log('[watch] ZCode detected.');
+      attempt = 0;
+    }
     try {
       log('Waiting for CDP target...');
       const { port, target } = await waitForZCodeTarget({});
@@ -270,6 +297,7 @@ async function main() {
   const argv = process.argv.slice(2);
   const probeOnly = argv.includes('--probe');
   const skipPatch = argv.includes('--no-patch');
+  const watch = argv.includes('--watch');
 
   // 1. Find ZCode
   let exeInfo;
@@ -280,6 +308,9 @@ async function main() {
     process.exit(1);
   }
   log(`ZCode found at: ${exeInfo.exePath} (source=${exeInfo.source})`);
+  if (watch) {
+    log('Watch mode: will auto-inject every time ZCode launches. Ctrl+C to stop.');
+  }
 
   // 2. Patch asar (unless --no-patch or --probe)
   if (!skipPatch) {
@@ -297,9 +328,12 @@ async function main() {
   }
 
   // 3. Probe port 9229. If up, attach directly. If not, spawn a fresh ZCode.
+  //    In --watch mode we never spawn — we wait for the user to open ZCode.
   let existingVersion = await probePort9229();
   if (existingVersion) {
     log('Port 9229 already responds (CDP endpoint up). Attaching to current ZCode.');
+  } else if (watch) {
+    log(`Port ${CDP_PORT} not bound yet. Watch mode will wait for ZCode to launch.`);
   } else {
     // Do NOT kill existing instances. Spawn a new one and wait for it to bind 9229.
     const beforePids = new Set(listRunningZCodePids());
@@ -326,13 +360,13 @@ async function main() {
       try { child.kill(); } catch {}
       break;
     }
-    if (!existingVersion) {
+    if (!existingVersion && !watch) {
       err(`Port ${CDP_PORT} did not bind within 30s. Did the patch apply?`);
       err('Try: re-run with --probe to dump CDP targets.');
       err('Or:  set ZCODE_TIMELINE_PORT to a different port.');
       process.exit(2);
     }
-    log(`Port ${CDP_PORT} is up now.`);
+    if (existingVersion) log(`Port ${CDP_PORT} is up now.`);
   }
 
   if (probeOnly) {
@@ -357,7 +391,7 @@ async function main() {
   process.on('SIGTERM', shutdown);
 
   // 5. Session loop
-  await sessionLoop();
+  await sessionLoop({ watch });
 }
 
 main().catch((e) => {

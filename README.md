@@ -137,10 +137,10 @@ If `patched-in-asar: NO` or `CDP endpoint: DOWN`, see [Troubleshooting](#trouble
 
 ## Daily use
 
-- **Do I need to start the launcher every time I open ZCode?** Yes — the launcher is what attaches to CDP and injects the bundle. After the first install, you can either re-run `npm run start`, or double-click `launcher\launcher.bat`.
+- **Do I need to start the launcher every time I open ZCode?** By default, yes. Run `npm run start` (or double-click `launcher\launcher.bat`) before opening ZCode. For a one-time setup that auto-injects on every launch (including after reboots), see [Optional: keep the launcher running in the background](#optional-keep-the-launcher-running-in-the-background).
 - **Where does the timeline appear?** Along the **left edge** of the chat panel, vertically centered. Hover a bar to expand it; hover for 500 ms to see the prompt preview; click to jump.
 - **How do I stop the launcher?** Switch to the terminal where you ran `npm run start` and press `Ctrl+C`. **ZCode keeps running** — the timeline UI continues to work until you restart ZCode, after which you'll need to re-run the launcher.
-- **Can I keep the launcher running in the background?** Yes. Use a tool like [pm2](https://pm2.keymetrics.io/) or Windows Task Scheduler if you want it auto-starting on boot.
+- **Where can I see the launcher logs if something breaks?** In the terminal window where it's running. With the scheduled task, logs are written to `%LOCALAPPDATA%\ZCode-Timeline\launcher.log` (or visible in Task Scheduler → History).
 
 ### Optional: desktop shortcut
 
@@ -157,6 +157,32 @@ Creates a "ZCode with Timeline" shortcut on your desktop that runs the launcher.
 ### When ZCode updates
 
 **Nothing to do.** The launcher detects the new `app.asar` via SHA-256 on its next start, backs up the new original, and re-patches automatically. Verify with `npm run verify` — you should see new backup entries.
+
+### Optional: keep the launcher running in the background
+
+Once the timeline is mounted, the launcher can stay running and **auto-inject every time you open ZCode** — including after a reboot. Two options:
+
+#### Option A — `--watch` mode (manual start, lives until Ctrl+C)
+
+```powershell
+npm run start -- --watch
+```
+
+The launcher stays in the foreground, polls for `ZCode.exe`, and auto-attaches whenever it appears. Press `Ctrl+C` to stop.
+
+#### Option B — Windows Scheduled Task (auto-start at login, set and forget)
+
+```powershell
+# Register: runs `node launcher/launcher.mjs --watch` on every login
+powershell -ExecutionPolicy Bypass -File scripts\install-autostart.ps1
+
+# Unregister
+powershell -ExecutionPolicy Bypass -File scripts\uninstall-autostart.ps1
+```
+
+Once registered, you never need to open a terminal again. After every Windows login, the watcher runs silently and injects the timeline whenever ZCode launches.
+
+> ⚠️ After installing the scheduled task, **close ZCode once** to test the auto-inject: open ZCode, wait ~3 s, the timeline rail should appear on the left edge. If it doesn't, open `Task Scheduler → Task Scheduler Library → "ZCode-Timeline (watch)" → Run` to see error output.
 
 ### When you want to update ZCode-Timeline itself
 
