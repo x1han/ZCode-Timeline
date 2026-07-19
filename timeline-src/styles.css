@@ -1,0 +1,163 @@
+/* timeline-src/styles.css
+ * Codex-style fixed panel on the chat's left side.
+ *
+ * Plain stack of bars — no pill background. Bars packed with light gap.
+ * Gray (light) + black palette. Rail grows to fit all bars (capped at
+ * 85vh); never internally scrolls — that would decouple the primary
+ * highlight from the chat viewport.
+ */
+
+.zcode-timeline-host {
+  position: fixed;
+  /* JS computes the correct `left` to align with the chat scroll container's
+   * left edge (after ZCode's sidebar). The default below is a fallback. */
+  left: 272px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  z-index: 2147483600;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+}
+
+.zcode-timeline-host * {
+  box-sizing: border-box;
+}
+
+/* ============== Rail ============== */
+.zcode-timeline-rail {
+  /* A3: rail must NOT capture clicks meant for the chat underneath.
+   * The bar buttons opt back in to pointer-events. The gap/padding regions
+   * around the bars let mouse events pass through to the chat. */
+  pointer-events: none;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;                          /* 1.5x spacing (5 + 3 = 8 per slot) */
+  width: 24px;
+  padding: 4px 0;
+  margin: 0;
+  /* A12: let the rail grow with the number of bars instead of clipping at
+   * 440px with internal scroll. Internal scroll decoupled from the chat
+   * scroll, so the primary bar could disappear out of the rail's own
+   * viewport. The host's `top: 50%; transform: translateY(-50%)` keeps it
+   * vertically centered regardless of rail height.
+   *
+   * Capping at 85vh prevents the rail from extending past the viewport on
+   * very long sessions; when it does, JS clamps the top edge in
+   * TimelinePanel.tsx so the rail never starts above y=0. */
+  max-height: 85vh;
+  z-index: 2147483640;
+}
+
+/* ============== Bar ============== */
+.zcode-timeline-bar {
+  position: relative;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 5px;
+  padding: 0;
+  margin: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  pointer-events: auto;
+  outline: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: width 140ms cubic-bezier(0.4, 0, 0.2, 1),
+              height 140ms cubic-bezier(0.4, 0, 0.2, 1),
+              transform 140ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.zcode-timeline-bar-dot {
+  display: block;
+  width: 100%;
+  height: 3px;
+  border-radius: 999px;
+  background: rgba(180, 185, 195, 0.55);   /* lighter gray (default) */
+  transition: background-color 140ms ease,
+              height 140ms ease,
+              width 140ms ease;
+}
+
+/* Staircase:
+ *   is-primary = the bar in focus (hovered, or closest to viewport center)
+ *   is-near-1  = one slot away from primary — slightly thicker, darker
+ *   is-near-2  = two slots away from primary — a bit thicker, slightly darker
+ * Only one bar is primary at any time.
+ */
+
+/* distance 2 — second-nearest to primary */
+.zcode-timeline-bar.is-near-2 .zcode-timeline-bar-dot {
+  height: 4px;
+  background: rgba(135, 140, 150, 0.75);
+}
+
+/* distance 1 — nearest neighbor to primary */
+.zcode-timeline-bar.is-near-1 .zcode-timeline-bar-dot {
+  height: 4px;
+  background: rgba(70, 75, 85, 0.9);
+}
+
+/* distance 0 — primary (active) */
+.zcode-timeline-bar.is-primary {
+  width: 17px;                       /* 1.2x of 14px default */
+}
+.zcode-timeline-bar.is-primary .zcode-timeline-bar-dot {
+  height: 5px;
+  background: #111;
+}
+
+.zcode-timeline-bar:focus-visible {
+  outline: 2px solid #111;
+  outline-offset: 2px;
+}
+
+/* dark theme — flip gray to lighter gray, black stays near-white */
+@media (prefers-color-scheme: dark) {
+  .zcode-timeline-bar-dot { background: rgba(170, 175, 185, 0.45); }
+  .zcode-timeline-bar.is-near-2 .zcode-timeline-bar-dot { background: rgba(195, 200, 210, 0.65); }
+  .zcode-timeline-bar.is-near-1 .zcode-timeline-bar-dot { background: rgba(220, 225, 232, 0.85); }
+  .zcode-timeline-bar.is-primary .zcode-timeline-bar-dot { background: #f5f5f7; }
+  .zcode-timeline-bar:focus-visible { outline-color: #f5f5f7; }
+}
+
+/* ============== Tooltip ============== */
+/* Lightweight prompt hint — first 100 chars of the user message. */
+.zcode-timeline-tooltip {
+  pointer-events: none;
+  position: fixed;
+  /* left/top set inline by JS to follow the hovered bar */
+  width: 280px;
+  max-width: 32vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  background: rgba(28, 30, 36, 0.96);
+  color: #f1f3f5;
+  border-radius: 6px;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.30);
+  padding: 6px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  z-index: 2147483647;
+  animation: zcode-tl-fade-in 120ms ease-out;
+}
+
+@keyframes zcode-tl-fade-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+/* ============== Flash on jumped-to message ============== */
+.zcode-tl-flash {
+  animation: zcode-tl-flash-anim 1.4s ease-out;
+}
+
+@keyframes zcode-tl-flash-anim {
+  0%   { background-color: transparent; box-shadow: 0 0 0 0 transparent; }
+  10%  { background-color: rgba(0, 0, 0, 0.10); box-shadow: 0 0 0 6px rgba(0, 0, 0, 0.20); }
+  100% { background-color: transparent; box-shadow: 0 0 0 0 transparent; }
+}

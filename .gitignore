@@ -1,0 +1,31 @@
+# Build output
+node_modules/
+dist/
+dist-types/
+
+# Generated state / staging (machine-local; never commit)
+.state.json
+.asar-staging/
+
+# Local scratch dirs created by debug probes
+.test/
+.zcode/
+
+# Logs
+*.log
+launcher.log
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Misc tool caches
+.cache/
+
+# Debug probes that write PNG screenshots / temp data into scripts/
+scripts/*.png
+scripts/_debug/
+
+# editor / IDE
+.vscode/
+.idea/
