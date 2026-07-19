@@ -6,13 +6,14 @@
 #   powershell -ExecutionPolicy Bypass -File scripts\restore-zcode-snapshot.ps1 -Index 2     # pick a specific backup
 #   powershell -ExecutionPolicy Bypass -File scripts\restore-zcode-snapshot.ps1 -Force       # skip the prompt
 #   powershell -ExecutionPolicy Bypass -File scripts\restore-zcode-snapshot.ps1 -WhatIf      # dry-run
+#   powershell -ExecutionPolicy Bypass -File scripts\restore-zcode-snapshot.ps1 -ZCodeResourcesDir "D:\Apps\ZCode\resources"
 #
 # D1: before overwriting the current app.asar, snapshot it to
 # `app.asar.before-restore-<timestamp>`. The user may change their mind and
 # want the patched state back without having to re-run `npm run start`.
 
 param(
-  [string]$ZCodeResourcesDir = "S:\ZCode\resources",
+  [string]$ZCodeResourcesDir = "",
   [string]$BackupGlob = "app.asar.original-*",
   [int]$Index = 1,
   [switch]$Force,
@@ -21,8 +22,52 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not (Test-Path $ZCodeResourcesDir)) {
-  Write-Host "[error] directory not found: $ZCodeResourcesDir" -ForegroundColor Red
+# Auto-detect ZCode's resources dir if -ZCodeResourcesDir was not supplied.
+# Probe order:
+#   1. Explicit -ZCodeResourcesDir argument (already in $ZCodeResourcesDir)
+#   2. $env:ZCODE_EXE + sibling "resources" folder
+#   3. S:\ZCode\resources, C:\ZCode\resources (developer paths)
+#   4. %LOCALAPPDATA%\Programs\ZCode\resources, ZCode Desktop, ZCode-Dev
+#   5. Currently running ZCode.exe (Get-Process) → its resources dir
+function Resolve-ZCodeResourcesDir {
+  param([string]$Explicit)
+  if ($Explicit -and (Test-Path $Explicit)) { return $Explicit }
+
+  if ($env:ZCODE_EXE -and (Test-Path $env:ZCODE_EXE)) {
+    $dir = Join-Path (Split-Path $env:ZCODE_EXE -Parent) 'resources'
+    if (Test-Path $dir) { return $dir }
+  }
+
+  $candidates = @(
+    'S:\ZCode\resources',
+    'C:\ZCode\resources',
+    (Join-Path $env:LOCALAPPDATA 'Programs\ZCode\resources'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\ZCode Desktop\resources'),
+    (Join-Path $env:LOCALAPPDATA 'Programs\ZCode-Dev\resources')
+  )
+  foreach ($c in $candidates) {
+    if ($c -and (Test-Path $c)) { return $c }
+  }
+
+  try {
+    $runningExe = & powershell -NoProfile -Command "(Get-Process -Name 'ZCode' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path)"
+    if ($runningExe -and (Test-Path $runningExe)) {
+      $dir = Join-Path (Split-Path $runningExe -Parent) 'resources'
+      if (Test-Path $dir) { return $dir }
+    }
+  } catch { }
+
+  return $null
+}
+
+if (-not $ZCodeResourcesDir) {
+  $ZCodeResourcesDir = Resolve-ZCodeResourcesDir -Explicit $ZCodeResourcesDir
+}
+
+if (-not $ZCodeResourcesDir -or -not (Test-Path $ZCodeResourcesDir)) {
+  Write-Host "[error] could not find ZCode's resources directory." -ForegroundColor Red
+  Write-Host "Pass -ZCodeResourcesDir explicitly, e.g.:" -ForegroundColor Yellow
+  Write-Host "  powershell -ExecutionPolicy Bypass -File scripts\restore-zcode-snapshot.ps1 -ZCodeResourcesDir 'D:\Apps\ZCode\resources'" -ForegroundColor Yellow
   exit 1
 }
 

@@ -3,7 +3,10 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Session timeline sidebar for ZCode (injected via CDP, upgrade-safe).",
+  "description": "Session timeline sidebar for ZCode, injected via CDP. Upgrade-safe and reversible.",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "build": "node timeline-src/build.mjs",
     "build:dev": "node timeline-src/build.mjs --dev",

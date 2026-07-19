@@ -1,182 +1,321 @@
 # ZCode Timeline
 
-ZCode 桌面客户端的会话时间线侧边栏。原生集成、升级安全、不破坏 ZCode 安装。
+**A vertical session timeline for [ZCode](https://github.com/x1han) — clickable, hover-previewable, never breaks your ZCode install.**
 
-每条 user message 对应一根 bar，hover 楼梯式展开，点击跳转到该消息，hover 500ms 显示 prompt 前 100 字缩略。
+![demo](docs/demo.gif)
+
+> Unofficial community tool. Currently **Windows only**.
 
 ---
 
-## 安装 / 快速开始
+## Features
 
-需要 **Node.js ≥ 18** 和 **ZCode 已安装**（路径默认 `S:\ZCode\`）。
+- 📍 **One bar per user message**, rendered along the left edge of the chat panel
+- 🔍 **Hover to preview** — after 500 ms, a tooltip shows the first 100 characters of the prompt
+- 🪜 **Cascade on hover** — the hovered bar expands and its neighbors step up in size, like a stair
+- 🎯 **Click to jump** — smooth-scrolls to that message and flashes a 1.4 s highlight
+- ♻️ **Upgrade-safe** — ZCode auto-updates won't kill the timeline; launcher detects new `app.asar` via SHA-256 and re-patches
+- 🛡 **Reversible** — original `app.asar` is always backed up; one command restores it
+- 🔌 **No kill** — the launcher never `taskkill`s your existing ZCode instance
 
-```bash
-cd S:/zcode_timeline
+---
+
+## Table of contents
+
+- [Installation](#installation)
+- [Verify it worked](#verify-it-worked)
+- [Daily use](#daily-use)
+- [Updating & uninstalling](#updating--uninstalling)
+- [Troubleshooting](#troubleshooting)
+- [FAQ](#faq)
+- [How it works](#how-it-works)
+- [Development](#development)
+- [License](#license)
+
+---
+
+## Installation
+
+### Prerequisites
+
+| | Requirement | Check |
+|---|---|---|
+| OS | **Windows 10 or 11** (macOS / Linux not yet supported — see [FAQ](#faq)) | `winver` |
+| Node.js | **≥ 18** (Node 20 LTS recommended) | `node --version` |
+| npm | bundled with Node | `npm --version` |
+| ZCode | installed and launched at least once | open ZCode once |
+| Disk | ~700 MB free (one `app.asar` backup ≈ 233 MB) | |
+| Permissions | write access to ZCode's `resources\` directory | |
+
+> ⚠️ **Important:** close **every** ZCode window (check the system tray too) before running `npm run start`. The launcher needs to atomically replace `app.asar`; ZCode keeps the file locked while running, which causes an `EPERM` failure.
+
+### Step 1 — find your ZCode install
+
+```powershell
+# PowerShell — if ZCode is currently running:
+powershell -NoProfile -Command "Get-Process -Name ZCode -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path"
+```
+
+If ZCode isn't running, check the most common paths:
+
+```
+C:\Users\<you>\AppData\Local\Programs\ZCode\ZCode.exe          ← default install
+C:\Users\<you>\AppData\Local\Programs\ZCode Desktop\ZCode.exe  ← alternate
+S:\ZCode\ZCode.exe                                             ← developer machine
+```
+
+If yours isn't there, set the path manually before launching:
+
+```powershell
+$env:ZCODE_EXE = "C:\Path\To\ZCode.exe"
+```
+
+The launcher also scans these automatically; you usually don't need to set anything.
+
+### Step 2 — clone, install, build
+
+```powershell
+# PowerShell
+git clone https://github.com/x1han/ZCode-Timeline.git
+cd ZCode-Timeline
 npm install
-npm run build          # 生成 dist/timeline.iife.js
-npm run start          # = node launcher/launcher.mjs
+npm run build
 ```
 
-`npm run start` 会：
+> 💡 If `npm install` ends with `1 moderate severity vulnerability` — that's a known advisory in `esbuild`'s dev server. It does **not** affect the bundled output (`dist/timeline.iife.js`) and can be safely ignored.
 
-1. 检测 `ZCode.exe`（自动扫常见安装路径 / 用 `Get-Process` 找运行中的实例）
-2. **asar patch** —— 给 ZCode 的 `resources/app.asar` 注入 `--remote-debugging-port=9229` flag。原 asar 备份到 `app.asar.original-<hash>`，可随时还原
-3. 通过 **CDP (Chrome DevTools Protocol)** 连接到 9229 端口
-4. **注入 React bundle** 到 ZCode 渲染进程
-5. 心跳 + hot reload：每 3s 检测 `.zcode-timeline-rail` marker，丢了就 re-inject；`dist/timeline.iife.js` 文件变动也自动重发
+### Step 3 — start the launcher
 
-> Ctrl+C 关 launcher，**ZCode 不会被一起关**，timeline UI 继续在 ZCode 里跑。
-
-## ZCode 升级后
-
-**自动适配，无需人工干预。**
-
-asar-patcher 通过 SHA-256 检测 app.asar 变化：
-
-- 首次安装：备份当前 asar → 注入 marker → atomic rename
-- ZCode 升级：launcher 下次启动时发现 hash 变了 → 备份新原始 asar → 重新 patch → atomic rename
-- 备份数量默认 **1 份**（`MAX_BACKUPS=1`），多余自动删，避免占满磁盘
-
-```bash
-# 想保留更多备份就加这个 env
-set ZCODE_TIMELINE_MAX_BACKUPS=3
+```powershell
+# Make sure ZCode is closed first!
 npm run start
 ```
 
-## 卸载 / 还原
+You should see logs like:
 
-```bash
-# 1. 还原 ZCode asar 到原始（未 patch）状态
+```
+[hh:mm:ss.mmm] ZCode found at: C:\...\ZCode.exe (source=running|candidate)
+[hh:mm:ss.mmm] [asar] status=patched backup of original: ...\app.asar.original-xxxx
+[hh:mm:ss.mmm] Port 9229 already responds (CDP endpoint up). Attaching to current ZCode.
+[hh:mm:ss.mmm] Attaching to target <id> via port 9229 (file:///...)
+[hh:mm:ss.mmm] CDP attached. Injecting timeline bundle...
+[hh:mm:ss.mmm] Timeline mounted successfully.
+```
+
+The launcher will spawn a fresh ZCode if none was running. Once mounted, ZCode's chat panel should show the timeline rail on the **left edge** with one bar per user message.
+
+---
+
+## Verify it worked
+
+```powershell
+npm run verify
+```
+
+Expected output:
+
+```
+app.asar:
+  path:        <wherever ZCode is>\resources\app.asar
+  size:        236,375,574 bytes
+  patched-in-asar: YES
+
+.state.json:
+  originalHash: <hash>
+  patchedHash:  <different hash>
+  backups:      1 file(s)
+
+CDP endpoint (port 9229): UP
+Browser: Chrome/...
+
+Bundle (dist/timeline.iife.js): size: 210,333 bytes (production)
+```
+
+If `patched-in-asar: NO` or `CDP endpoint: DOWN`, see [Troubleshooting](#troubleshooting).
+
+---
+
+## Daily use
+
+- **Do I need to start the launcher every time I open ZCode?** Yes — the launcher is what attaches to CDP and injects the bundle. After the first install, you can either re-run `npm run start`, or double-click `launcher\launcher.bat`.
+- **Where does the timeline appear?** Along the **left edge** of the chat panel, vertically centered. Hover a bar to expand it; hover for 500 ms to see the prompt preview; click to jump.
+- **How do I stop the launcher?** Switch to the terminal where you ran `npm run start` and press `Ctrl+C`. **ZCode keeps running** — the timeline UI continues to work until you restart ZCode, after which you'll need to re-run the launcher.
+- **Can I keep the launcher running in the background?** Yes. Use a tool like [pm2](https://pm2.keymetrics.io/) or Windows Task Scheduler if you want it auto-starting on boot.
+
+### Optional: desktop shortcut
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\install-shortcut.ps1
+```
+
+Creates a "ZCode with Timeline" shortcut on your desktop that runs the launcher.
+
+---
+
+## Updating & uninstalling
+
+### When ZCode updates
+
+**Nothing to do.** The launcher detects the new `app.asar` via SHA-256 on its next start, backs up the new original, and re-patches automatically. Verify with `npm run verify` — you should see new backup entries.
+
+### When you want to update ZCode-Timeline itself
+
+```powershell
+git pull
+npm install
+npm run build
+```
+
+The launcher's `fsWatch` will pick up the new `dist/timeline.iife.js` and re-inject automatically — no need to restart the launcher.
+
+### Uninstall completely
+
+```powershell
+# 1. Restore the original (unpatched) ZCode asar
 powershell -ExecutionPolicy Bypass -File scripts\restore-zcode-snapshot.ps1
+# Optional flags: -WhatIf (dry-run) / -Force (skip prompt) / -Index N (pick a specific backup)
 
-# 2. 删项目目录
-rm -rf S:/zcode_timeline
+# 2. Delete the project directory
+Remove-Item -Recurse -Force .\ZCode-Timeline
+
+# 3. Restart ZCode so the in-memory timeline UI disappears
 ```
 
-`restore-zcode-snapshot.ps1` 默认会自动备份当前 asar 到 `app.asar.before-restore-<timestamp>`，**即使改主意也能找回**。支持 `-Index N` 选特定备份、`-WhatIf` dry-run、`-Force` 跳过提示。
+The restore script auto-detects your ZCode install via `$env:ZCODE_EXE`, common paths, or running processes. If detection fails, pass it explicitly:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\restore-zcode-snapshot.ps1 -ZCodeResourcesDir "D:\Apps\ZCode\resources"
+```
+
+> The restore script always writes a `app.asar.before-restore-<timestamp>` snapshot of your current asar before swapping — change your mind and you can roll forward again.
 
 ---
 
-## 它是什么（不是普通插件）
+## Troubleshooting
 
-| 层 | 是什么 | 改了什么 |
+| Symptom | Cause | Fix |
 |---|---|---|
-| **Launcher** (`launcher/*.mjs`) | Node 脚本，启/守注入 | 不改 ZCode |
-| **asar patch** | 给 ZCode main bundle prepend 一个 `commandLine.appendSwitch('remote-debugging-port','9229')` 块 | 改 `S:\ZCode\resources\app.asar`（原文件备份） |
-| **Timeline bundle** (`timeline-src/*.tsx`) | React 19 应用，编译成单个 IIFE，通过 CDP 注入 | 不写文件，纯运行时 DOM |
+| `ZCode.exe not found.` | ZCode installed somewhere the launcher doesn't scan | Set `$env:ZCODE_EXE = "C:\Path\To\ZCode.exe"` then re-run |
+| `asar patch failed: EPERM` or `rename failed` | ZCode is still running and holds `app.asar` open | Fully quit ZCode (right-click tray icon → Quit), then `npm run start` |
+| `Port 9229 did not bind within 30s` | Patch never applied (often the EPERM above) or another app is using 9229 | Close ZCode; or set `$env:ZCODE_TIMELINE_PORT = "9228"` and use that port |
+| `Timeline mounted successfully.` but no rail visible | Bundle injected but your current session has no user messages yet | Send a message in the current chat; rail appears |
+| `npm install` hangs or fails | Network/proxy issue | Try `npm config set registry https://registry.npmjs.org/` and retry |
+| `node: ... GLIBC_...` (Linux) or `darwin` (mac) errors | Project is Windows-only; you ran it on a different OS | See [FAQ](#faq) — macOS / Linux not supported yet |
+| Want to keep more ZCode backups | `MAX_BACKUPS=1` is the default to save disk space | `$env:ZCODE_TIMELINE_MAX_BACKUPS = "5"; npm run start` |
+| Antivirus quarantines the modified `app.asar` | False positive | Add the ZCode install directory to your AV's exclusion list |
 
-> ZCode 主进程代码**完全没改**，只多了一个 CDP flag；timeline UI 是 ZCode 自己渲染进程里的纯前端 DOM，读 user message DOM 渲染侧栏。
+For deeper diagnostics:
 
----
-
-## 项目结构
-
-```
-S:/zcode_timeline/
-├── package.json              # npm scripts + deps
-├── tsconfig.json             # TS 配置（编辑器用）
-├── .gitignore
-├── README.md
-├── launcher/
-│   ├── launcher.mjs          # 主流程：patch + attach + inject + heartbeat + hot reload
-│   ├── cdp.mjs               # chrome-remote-interface 封装
-│   ├── asar-patcher.mjs      # SHA-256 升级检测 + atomic patch + MAX_BACKUPS prune
-│   ├── zcode-finder.mjs      # 找 ZCode.exe（env / 常见路径 / Get-Process）
-│   ├── launcher.bat          # Windows 双击启动
-│   └── start-zcode-clean.mjs # OPT-IN: 杀所有 ZCode（需 START_ZCODE_CLEAN_CONFIRM=yes-do-it）
-├── timeline-src/
-│   ├── index.tsx             # bundle 入口（导出 mount / unmount / refresh / diagnose）
-│   ├── TimelinePanel.tsx     # single-instance 模式，host 在 chat 左缘固定
-│   ├── Bar.tsx               # 单根 bar，hover 楼梯展开，点击跳转，500ms tooltip
-│   ├── Tooltip.tsx           # React Portal → document.body，前 100 字 + viewport clamp
-│   ├── store.ts              # 模块级 state（messages / hovered / tooltipId）
-│   ├── message-collector.ts  # MutationObserver（scope 到 chat 容器）+ textContent 优先
-│   ├── scroll-to.ts          # 平滑滚动 + flash 高亮（WeakMap timer 清理）
-│   ├── dom-probe.ts          # 14 个 user-message 选择器 + 找 scroll container
-│   ├── styles.css            # 全部样式（zcode-timeline-* 命名空间）
-│   └── build.mjs             # esbuild → dist/timeline.iife.js（IIFE + 原子 tmp/rename）
-├── dist/                     # build 产物（gitignore）
-├── scripts/
-│   ├── hot-reload.mjs        # dev mode: 文件改动 → 重新 build（传 --dev，unminified + sourcemap）
-│   ├── verify-patch.mjs      # 检查 patch / state / CDP / bundle 状态
-│   ├── probe-dom.mjs         # `npm run probe`
-│   ├── list-asar.mjs         # 列 asar 顶层结构
-│   ├── restore-zcode-snapshot.ps1
-│   └── _debug/               # 调试 probe 集合（gitignore）
-└── .state.json               # 升级检测状态（gitignore）
+```powershell
+npm run probe       # see which user-message DOM selector matched
 ```
 
 ---
 
-## 开发模式
+## FAQ
+
+**Is this an official ZCode plugin?**
+No. It's a community tool that lives entirely in your user account (`S:\zcode_timeline\`) and never auto-updates ZCode. It modifies one file — `resources\app.asar` — and always backs it up first.
+
+**What does it actually change?**
+One thing: it adds `--remote-debugging-port=9229` to ZCode's main process startup arguments. This opens a CDP endpoint that the launcher connects to. Nothing in ZCode's source code or UI assets is touched.
+
+**Will ZCode upgrades break it?**
+No. ZCode's auto-updater rewrites `app.asar`; on the next launcher start we detect the SHA-256 change, back up the new original, and re-apply the patch. The timeline comes back automatically.
+
+**Will ZCode send my conversations anywhere?**
+No. The CDP connection is **loopback-only** (`127.0.0.1`) and is consumed only by the launcher on your machine. Nothing is sent over the network.
+
+**Does it work on macOS or Linux?**
+Not yet. The launcher currently uses PowerShell + `taskkill` + Windows path conventions. Adding macOS/Linux support is on the roadmap — see the [issue tracker](https://github.com/x1han/ZCode-Timeline/issues) (open an issue if you need it).
+
+**Does it slow down ZCode?**
+No measurable impact. The bundle is ~210 KB and runs once per page load. A `MutationObserver` watches the chat container for new messages with no perceptible overhead.
+
+**Can I disable the timeline temporarily without uninstalling?**
+Set `$env:ZCODE_TIMELINE_DISABLE = "1"` before launching ZCode manually — the bootstrap code in `app.asar` will skip enabling CDP. Unset the variable to re-enable.
+
+**Why does `npm install` warn about a vulnerability in esbuild?**
+The advisory affects esbuild's local dev server (which this project doesn't run). The bundled output `dist/timeline.iife.js` is unaffected. The warning can be safely ignored.
+
+---
+
+## How it works
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  ZCode-Timeline/                                         │
+│                                                          │
+│   launcher.mjs ─────► patches app.asar (atomic rename)   │
+│        │              adds --remote-debugging-port=9229   │
+│        │                                                 │
+│        ├────────► connects via CDP at 127.0.0.1:9229     │
+│        │                                                 │
+│        └────────► injects dist/timeline.iife.js          │
+│                       (React 19 + IIFE)                  │
+│                                                          │
+└──────────────────────────────────────────────────────────┘
+```
+
+1. **Asar patch** — `launcher/asar-patcher.mjs` prepends a bootstrap block to `out\main\index.js` inside ZCode's `app.asar`. The bootstrap calls `electron.app.commandLine.appendSwitch('remote-debugging-port', '9229')`. The patched asar is written to `app.asar.new` and atomically `rename`'d over the original. The original is backed up as `app.asar.original-<hash[:12]>`.
+
+2. **CDP connection** — once ZCode restarts with the flag, port 9229 is bound. The launcher attaches via `chrome-remote-interface`, enables the usual CDP domains, and `Page.setBypassCSP({enabled: true})` so the injection isn't blocked.
+
+3. **Bundle injection** — `dist/timeline.iife.js` (a React 19 IIFE) is `Runtime.evaluate`'d into ZCode's renderer. The bundle:
+   - inserts a single `<style>` element (idempotent)
+   - mounts a React tree into a `<div class="zcode-timeline-host">` appended to `<body>`
+   - a `MutationObserver` watches the chat container for new user messages
+   - heartbeat / `fsWatch` keep it alive across page reloads
+
+4. **Re-inject on change** — both the launcher (every 3s) and a `Page.addScriptToEvaluateOnNewDocument` (every navigation) ensure the timeline survives ZCode's SPA route changes.
+
+5. **Cleanup** — the bundle is the only place that touches ZCode's DOM. Closing ZCode and running `restore-zcode-snapshot.ps1` restores `app.asar` exactly to its pre-patch state (the bootstrap block is removed; original is back from the backup). The `dist/` folder and project directory can then be deleted.
+
+---
+
+## Development
 
 ```bash
-npm run dev    # = node scripts/hot-reload.mjs
+# Watch mode: rebuild on save and auto-reinject into ZCode
+npm run dev
+
+# Production build (minified, no sourcemap)
+npm run build
+
+# Dev build (unminified + inline sourcemap)
+npm run build:dev
+
+# Clean dist/
+npm run clean
 ```
 
-监听 `timeline-src/**/*.{ts,tsx,css,mjs}`，改动后自动 `node timeline-src/build.mjs --dev`（**unminified + inline sourcemap**）。launcher 的 `fsWatch(DIST_FILE)` 看到 bundle 变了就自动 re-inject 到 ZCode。改完代码几秒内就能在 ZCode 看到效果。
+### Project structure
 
----
+```
+ZCode-Timeline/
+├── launcher/         # Node-based asar patcher + CDP injector + heartbeat
+├── timeline-src/     # React 19 bundle source (TypeScript + esbuild)
+├── scripts/          # ops scripts (restore, probe, verify, install-shortcut)
+├── package.json
+├── tsconfig.json
+└── README.md
+```
 
-## npm scripts
+### Environment variables
 
-| 命令 | 作用 |
-|---|---|
-| `npm run build` | 生产构建（minified） |
-| `npm run build:dev` | 开发构建（unminified + sourcemap） |
-| `npm run dev` | 监听源码改动 + 自动重建 + 自动 re-inject |
-| `npm run start` | 启动 launcher（patch asar + 注入 bundle + 心跳） |
-| `npm run start:clean` | OPT-IN 杀所有 ZCode 后重启（需 env 确认） |
-| `npm run verify` | 检查 patch / state / CDP 状态 |
-| `npm run probe` | 探测 user message DOM 选择器命中情况 |
-| `npm run clean` | 删 `dist/` |
-
----
-
-## 环境变量
-
-| 变量 | 默认 | 作用 |
+| Variable | Default | Purpose |
 |---|---|---|
-| `ZCODE_EXE` | _（自动扫）_ | 显式指定 ZCode.exe 路径 |
-| `ZCODE_TIMELINE_PORT` | `9229` | CDP 端口（asar patch + launcher 都会跟着改） |
-| `ZCODE_TIMELINE_DISABLE` | _（未设）_ | 设置后跳过 patch（只跑 launcher 不开 9229） |
-| `ZCODE_TIMELINE_MAX_BACKUPS` | `1` | 最多保留几份 `.original-<hash>` 备份 |
+| `ZCODE_EXE` | _auto-detected_ | Explicit path to `ZCode.exe` |
+| `ZCODE_TIMELINE_PORT` | `9229` | CDP port (must match the patched value) |
+| `ZCODE_TIMELINE_DISABLE` | _unset_ | Set to skip the asar patch on this run |
+| `ZCODE_TIMELINE_MAX_BACKUPS` | `1` | Keep at most N `app.asar.original-<hash>` backups |
 
----
+### Contributing
 
-## 约束（用户硬规则，本项目全程遵守）
-
-1. **不杀现有 ZCode 实例** —— launcher 检测到 9229 已 bind 就直接 attach，从不 `taskkill`。spawn 后探测到端口被别人的 ZCode 占用会 kill 自己刚 spawn 的 child（不算"杀现有实例"）。
-2. **不破坏 `S:\ZCode\`** —— asar patch 用 `.new` 临时文件 + `renameSync` 原子换名；EPERM 时**绝不**回退到非原子 `writeFileSync`（会半截损坏原 asar），而是返回 failed 提示用户关 ZCode 重试。
-3. **永远保留原 asar 备份** —— `app.asar.original-<hash>` 始终至少留 1 份（`MAX_BACKUPS=1`），多余的自动删。
-
----
-
-## 故障排查
-
-**9229 端口没起来 / launcher attach 不上**：
-```bash
-npm run verify   # 检查 asar 是否已 patch + CDP 端口是否 bind
-```
-
-**bundle 注入但 UI 不显示**：
-```bash
-npm run probe    # 探测 user message 选择器命中情况
-```
-
-**完全还原 ZCode**：
-```bash
-powershell -ExecutionPolicy Bypass -File scripts\restore-zcode-snapshot.ps1
-```
-
-**手动指定 ZCode 路径**（如果自动检测失败）：
-```bash
-set ZCODE_EXE=C:\Path\To\ZCode.exe
-npm run start
-```
+Issues and PRs welcome. For substantial changes please open an issue first to discuss the approach. Before opening a PR, run `npm run verify` and confirm the timeline still mounts in your local ZCode.
 
 ---
 
 ## License
 
-MIT
+[MIT](./LICENSE) © 2026 ZCode-Timeline contributors
