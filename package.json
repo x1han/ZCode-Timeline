@@ -23,6 +23,7 @@
     "build:exe:arm64": "npm run bundle:installer && pkg . --targets node22-win-arm64 --no-bytecode --public --output dist-installer/zcode-timeline-installer-arm64.exe",
     "build:exe:uninstaller:x64": "npm run bundle:uninstaller && node scripts/build-uninstaller-exe.mjs x64",
     "build:exe:uninstaller:arm64": "npm run bundle:uninstaller && node scripts/build-uninstaller-exe.mjs arm64",
+    "build:release": "node scripts/build-release.mjs",
     "bundle:installer": "node installer/bundle.mjs",
     "bundle:uninstaller": "node installer/bundle-uninstaller.mjs",
     "clean": "node -e \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\""
