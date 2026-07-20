@@ -11,205 +11,135 @@
 ## Features
 
 - One bar per user message along the left edge of the chat panel
-- Hover previews and a cascade effect for nearby bars
+- Hover previews and a smooth staircase effect for nearby bars
 - Click a bar to smooth-scroll to that message
 - Native startup loading after a one-shot install: no daemon and no CDP injection
 - Atomic, reversible `app.asar` patching with an original backup
-- The existing CDP launcher remains available for development and hot reload
+- Standalone `.exe` installer and uninstaller — no terminal required
 
-## Quick install (Windows .exe)
-
-For most users. Download one file, double-click, done. No terminal, no `git`, no manual steps.
-
-1. Download `zcode-timeline-installer.exe` from the [latest release](https://github.com/x1han/ZCode-Timeline/releases/latest) (Windows x64) or `zcode-timeline-installer-arm64.exe` for ARM Windows.
-2. Double-click it.
-3. Wait for it to finish (about 30 seconds — it clones the repo, builds, and patches ZCode).
-4. Restart ZCode.
-
-The installer auto-detects ZCode, polls for up to 5 minutes if ZCode is holding `app.asar` open, and relaunches ZCode at the end. If ZCode is locked when you run it, just close ZCode and double-click the installer again — the staged `.new` will be picked up.
-
-You still need **Node.js + npm + git** installed on the machine (the installer calls `npm install` and `git clone` under the hood). If any of those are missing, the installer prints which one and where to get it.
-
-### Build the installer yourself
-
-```powershell
-git clone https://github.com/x1han/ZCode-Timeline.git
-cd ZCode-Timeline
-npm install
-npm run build:exe          # produces dist-installer\zcode-timeline-installer.exe
-                            # and dist-installer\zcode-timeline-installer-arm64.exe
-```
+---
 
 ## Installation
 
+Download the latest release zip and run the installer.
+
+1. Open the [latest release page](https://github.com/x1han/ZCode-Timeline/releases/latest).
+2. Download `zcode-timeline-windows.zip` (or `zcode-timeline-windows-arm64.zip` for ARM Windows). The zip contains:
+   - `zcode-timeline-installer.exe` — installs or upgrades the timeline
+   - `zcode-timeline-uninstaller.exe` — restores the original ZCode `app.asar`
+3. Extract the zip anywhere (Desktop is fine).
+4. Double-click `zcode-timeline-installer.exe`.
+5. If ZCode is currently running, the installer will offer a 5-second countdown before closing it. Press `Ctrl+C` in the console window to cancel.
+6. Wait for the installer to finish. It auto-detects your ZCode installation, backs up the original `app.asar`, embeds the timeline bundle, atomically swaps the patched archive into place, and re-launches ZCode.
+
+That's it. The timeline loads automatically on every ZCode startup afterwards.
+
 ### Prerequisites
 
-- Node.js 18 or newer and npm
+- Windows x64 or ARM64 (the release zip includes both variants)
 - ZCode installed and launched at least once
-- Write access to ZCode's `resources` directory
-- Enough free disk space for one `app.asar` backup
+- Write access to ZCode's `resources\` directory (the installer will tell you if this fails)
+- The installer currently checks for `node`, `npm`, and `git` on `PATH` and exits if any are missing. This check is over-conservative — the actual install does not use any of them — but it remains in place for safety. If you hit the check on a fresh machine, the message includes the install URL for each missing tool. (See "Troubleshooting" below if you want to work around it.)
 
-### One-shot install
+### macOS / Linux
+
+The release zip is Windows-only because the install flow patches `app.asar` in place, which breaks the macOS code signature and requires sudo on Linux. A native macOS/Linux release is not currently published. Use the dev launcher (see below) on those platforms, or run the install on Windows under WSL with `ZCODE_EXE` pointed at the Linux binary.
+
+---
+
+## Updating
+
+When a new timeline version is released:
+
+1. Download the latest release zip (same as install).
+2. Double-click `zcode-timeline-installer.exe` again. It detects the existing install and replaces the embedded bundle without touching your ZCode install.
+3. Restart ZCode if the installer did not do so automatically.
+
+The original `app.asar` backup from your first install is preserved on disk; you can always go back to it.
+
+---
+
+## Uninstalling
+
+Double-click `zcode-timeline-uninstaller.exe` from the same release zip.
+
+The uninstaller mirrors the installer: 5-second countdown → close ZCode → restore original `app.asar` from the backup → remove the install directory → re-launch ZCode. After it finishes, ZCode is back to its pristine, un-timeline state.
+
+If you do not have the uninstaller anymore, the original backup lives at `ZCode\resources\app.asar.original-<hash>` next to `app.asar`. Move it over `app.asar` manually.
+
+---
+
+## How it works
+
+`app.asar` is ZCode's packed application archive. The installer's only job is to write a tiny HTML marker into `out/renderer/index.html` (so ZCode loads the timeline bundle from `out/renderer/zcode-timeline/timeline.install.iife.js` on startup) and to embed that bundle inside `app.asar`. No background process, no CDP injection, no launcher daemon.
+
+The flow:
+
+1. Detect the ZCode executable (honors `ZCODE_EXE`, then a running ZCode process, then common install paths).
+2. Take a SHA-256 of the current `app.asar` and copy it to `app.asar.original-<hash>` if no backup exists yet.
+3. Extract the archive into a staging directory.
+4. Insert the renderer marker before `</head>` in `out/renderer/index.html` (idempotent — already-marked archives are skipped).
+5. Copy the pre-built timeline bundle into the staging directory at the two expected paths.
+6. Pack the staging directory into `app.asar.new`, validate the markers and bundle, then atomically rename it over the original `app.asar`.
+7. Record the install state (original hash, patched hash, backup paths) in `.state.json` next to the bundle, so the uninstaller knows what to restore.
+
+If ZCode is running and holds `app.asar` open, step 6 fails with `EPERM`/`EACCES`/`EBUSY`. The installer does not partial-write the original in that case; it leaves `app.asar.new` staged and reports the error path.
+
+---
+
+## Troubleshooting
+
+### "Node.js is required but was not found on PATH"
+
+The installer checks for `node`, `npm`, and `git` but does not actually use them. The check is defensive. Two options:
+
+- Install Node.js LTS from [nodejs.org](https://nodejs.org/) (this also gives you `npm`). Install Git from [git-scm.com](https://git-scm.com/). Re-run the installer.
+- Or, if you want to skip the check, run the installer from a shell that has those commands available (e.g., a "Git Bash" terminal that has `git` in its `PATH`). The `node`/`npm`/`git` commands do not actually need to do anything; they just need to exist.
+
+(Removing the check is on the to-do list. Track the issue if you want it fixed sooner.)
+
+### The installer says `EPERM`, `EACCES`, or `EBUSY`
+
+ZCode is still holding `app.asar` open. The installer auto-closes ZCode after a 5-second countdown, but if you cancelled the countdown (`Ctrl+C`), ZCode is still running. Close all ZCode windows and the tray icon, then double-click the installer again. The staged `.new` archive will be picked up automatically.
+
+### The installer says it succeeded but ZCode still has no timeline
+
+Restart ZCode. The patched archive only loads on next launch.
+
+### macOS reports the application is "damaged" or "untrusted"
+
+Modifying `app.asar` inside a signed `.app` bundle invalidates the code signature. Gatekeeper will block ZCode on next launch. This is an inherent consequence of patching a signed bundle, not an installer bug. Reinstalling the official ZCode `.app` from the developer restores the original signature.
+
+### The timeline looks wrong after a ZCode update
+
+ZCode's auto-updater may have replaced `resources/app.asar` with a fresh archive. Re-run `zcode-timeline-installer.exe` from the release zip — the installer detects the new archive, takes a fresh backup of the pristine archive, and re-embeds the timeline.
+
+---
+
+## Dev workflow
+
+For contributors working on the timeline source itself. This is not part of the end-user install flow.
 
 ```powershell
 git clone https://github.com/x1han/ZCode-Timeline.git
 cd ZCode-Timeline
 npm install
-npm run build
-npm run install
+npm run build:dev      # unminified bundle with inline source map
+npm run start          # build, launch/attach ZCode via CDP, inject once
+npm run start -- --watch   # keep the launcher attached across ZCode restarts
+npm run dev            # rebuild on source changes and reinject automatically
 ```
 
-`npm install` only installs dependencies; it does not patch ZCode. `npm run build` creates both the plain development bundle and the self-mounting install bundle. `npm run install` finds ZCode, backs up its original `app.asar`, embeds the timeline, and atomically swaps the new archive into place.
-
-The installer never terminates ZCode. On Windows, if ZCode has `app.asar` locked, the installer stages `app.asar.new`, prints one waiting message, and polls for up to five minutes. Fully quit ZCode, including its tray process, during that window. If the lock remains, the original archive is untouched and the error tells you where the staged archive was left.
-
-After installation, start ZCode normally from its usual shortcut. The timeline loads on every ZCode startup without `npm run start`, a background process, or CDP injection.
-
-### ZCode auto-detection
-
-The installer first honors `ZCODE_EXE`, then checks a running Windows `ZCode` process, common platform paths, and `PATH`:
-
-- Windows: `S:\ZCode`, `C:\ZCode`, `D:\ZCode`, `E:\ZCode`, `%LOCALAPPDATA%\Programs\ZCode`, and Program Files
-- macOS: `/Applications/ZCode.app/Contents/MacOS/ZCode` and `~/Applications/ZCode.app/Contents/MacOS/ZCode`
-- Linux: `/opt/ZCode/ZCode`, `/usr/local/ZCode/ZCode`, `~/.local/share/ZCode/ZCode`, and `ZCode` on `PATH`
-
-For a nonstandard installation, set the executable explicitly:
-
-```powershell
-$env:ZCODE_EXE = "D:\Apps\ZCode\ZCode.exe"
-npm run install
-```
-
-## Verify it worked
-
-```powershell
-npm run install:status
-npm run verify
-```
-
-`install:status` reports the detected executable, `app.asar`, patch state, both marker states, and embedded bundle sizes. `npm run verify` exits non-zero unless the main marker, renderer marker, and embedded self-mounting bundle are all present.
-
-A successful verification ends with:
-
-```text
-  main marker: YES
-  renderer marker: YES
-  embedded bundle: YES
-  embedded bundle size: 210,000+ bytes
-Verification: PASSED
-```
-
-The CDP endpoint may be down in install mode; the installed sidebar does not depend on it.
-
-## Daily use
-
-Open ZCode normally. No terminal, launcher daemon, scheduled task, or special shortcut is required.
-
-When ZCode updates, its updater may replace `resources/app.asar`. Re-run the one-shot installer to embed the timeline into the new version:
-
-```powershell
-npm run build
-npm run install
-```
-
-The patcher detects the new archive, keeps a backup of the new original, and reapplies the native install.
-
-To update ZCode Timeline itself:
-
-```powershell
-git pull
-npm install
-npm run build
-npm run install
-```
-
-## Uninstall
-
-Fully quit ZCode if the operating system holds `app.asar` open, then run:
-
-```powershell
-npm run uninstall
-```
-
-This atomically restores the most recent recorded original archive. `npm run verify` should then exit non-zero and report the install as absent.
-
-## Troubleshooting
-
-### Windows says `EPERM`, `EACCES`, or `EBUSY`
-
-ZCode is holding `resources\app.asar` open. The installer does not kill any process and never partial-writes the original. It waits silently after one `waiting for ZCode to close...` line, polling every two seconds for up to five minutes. Quit all ZCode windows and the tray process. If the timeout expires, run `npm run install` again after ZCode is fully closed; the error includes the staged `.new` path.
-
-### macOS reports a damaged or untrusted application
-
-Changing `app.asar` inside a signed `ZCode.app` invalidates the application signature. Gatekeeper may reject ZCode on its next launch. This is an inherent consequence of modifying a signed app bundle, not an atomic-write failure. Reinstalling the official ZCode application restores its original signature; use install mode on macOS only if you understand the local signing implications.
-
-### `ZCODE_TIMELINE_DISABLE` does not hide the installed timeline
-
-`ZCODE_TIMELINE_DISABLE` is a no-op for the install-mode sidebar. The renderer script is baked into `index.html` and mounts independently of `process.env`. To disable it, run `npm run uninstall`. The variable remains relevant only to the CDP bootstrap used by the development launcher.
-
-### ZCode is not detected
-
-Set `ZCODE_EXE` to the full executable path and retry. On Windows PowerShell:
-
-```powershell
-$env:ZCODE_EXE = "C:\Path\To\ZCode.exe"
-npm run install
-```
-
-### The markers pass but no rail is visible
-
-Restart ZCode so it loads the newly replaced archive, then open a conversation containing at least one user message. Run `npm run install:status` and `npm run verify` again. For DOM-level development diagnostics, use `npm run probe`.
-
-## How it works
-
-`npm run build` leaves `dist/timeline.iife.js` unchanged for the development launcher and also creates `dist/timeline.install.iife.js`. The install artifact keeps the same window globals, skips iframes, waits for `DOMContentLoaded` when necessary, and invokes `window.__ZCODE_TIMELINE_MOUNT__()`. Mounting is idempotent: the existing timeline instance is destroyed before a new React root is created.
-
-`npm run install` performs these steps:
-
-1. Detects the ZCode executable and derives `resources/app.asar` from its directory.
-2. Extracts the archive into a staging directory.
-3. Keeps the existing main-process CDP-port marker for compatibility with the development launcher.
-4. Inserts this renderer marker block immediately before `</head>` in `out/renderer/index.html`:
-
-   ```html
-   <!-- ::zcode-timeline:renderer:begin:: -->
-   <script src="./zcode-timeline/timeline.install.iife.js" data-zcode-timeline="1"></script>
-   <!-- ::zcode-timeline:renderer:end:: -->
-   ```
-
-5. Embeds the self-mounting bundle in the archive, packs to `app.asar.new`, validates the markers and bundle, and atomically renames it over the original.
-
-ZCode's renderer has no CSP (`out/renderer/index.html` does not declare one; `setContentSecurityPolicy` and `webRequest.onHeadersReceived` are absent from the main bundle), so a `<script>` tag injection in `index.html` executes freely.
-
-The original archive is stored as `app.asar.original-<hash>` and tracked in `.state.json`. Marker checks make repeated installs idempotent, while bundle comparison ensures a newly built timeline is embedded even when the markers already exist.
-
-## Dev workflow
-
-The daemon-based launcher is retained for development only. It uses the plain IIFE, CDP evaluation, heartbeat reinjection, and file watching:
-
-```powershell
-# Build, launch/attach, and inject once
-npm run start
-
-# Keep the launcher waiting across ZCode restarts
-npm run start -- --watch
-
-# Rebuild on source changes and reinject
-npm run dev
-
-# Unminified bundle with inline source map
-npm run build:dev
-```
-
-The older `scripts/install-autostart.ps1` and `scripts/install-shortcut.ps1` helpers target this CDP development launcher. They are deprecated for normal installation because native install mode needs neither autostart nor a special shortcut.
+`scripts/install-autostart.ps1` and `scripts/install-shortcut.ps1` are CDP-launcher helpers from the pre-install-mode era. They are no longer needed for end users.
 
 ### Project structure
 
 ```text
 ZCode-Timeline/
-├── launcher/         # one-shot installer, ASAR patcher, and dev CDP launcher
-├── timeline-src/     # React 19 timeline source and esbuild entry
-├── scripts/          # verification, probes, and legacy dev helpers
+├── installer/           # standalone installer.exe + uninstaller.exe sources and bundles
+├── launcher/            # shared asar-patcher + CDP dev launcher
+├── timeline-src/        # React 19 timeline source and esbuild entry
+├── scripts/             # verification, probes, build wrappers
 ├── package.json
 └── README.md
 ```
@@ -219,9 +149,10 @@ ZCode-Timeline/
 | Variable | Default | Purpose |
 |---|---|---|
 | `ZCODE_EXE` | auto-detected | Explicit ZCode executable path |
-| `ZCODE_TIMELINE_PORT` | `9229` | CDP port for the development launcher |
+| `ZCODE_TIMELINE_PORT` | `9229` | CDP port for the dev launcher only |
 | `ZCODE_TIMELINE_DISABLE` | unset | Dev CDP bootstrap only; no-op for the install-mode sidebar |
 | `ZCODE_TIMELINE_MAX_BACKUPS` | `1` | Maximum retained `app.asar.original-<hash>` backups |
+| `ZCODE_TIMELINE_LOG` | `~/.zcode-timeline-install.log` | Override the installer/uninstaller log file path |
 
 ## License
 
