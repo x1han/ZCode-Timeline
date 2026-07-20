@@ -61,7 +61,6 @@ If ZCode isn't running, check the most common paths:
 ```
 C:\Users\<you>\AppData\Local\Programs\ZCode\ZCode.exe          ← default install
 C:\Users\<you>\AppData\Local\Programs\ZCode Desktop\ZCode.exe  ← alternate
-S:\ZCode\ZCode.exe                                             ← developer machine
 ```
 
 If yours isn't there, set the path manually before launching:
@@ -86,8 +85,13 @@ npm run build
 
 ### Step 3 — start the launcher
 
+Finish all install/build work from **Step 2** first — by the time you reach this step the launcher is built and ready to go.
+
+If ZCode is currently open, **close it before running `npm run start`**. The launcher needs to patch `app.asar`, which is locked while ZCode is running, so leaving it open would cause the patch step to fail.
+
 ```powershell
-# Make sure ZCode is closed first!
+# Only close ZCode if it's currently running.
+# (If ZCode isn't open, the launcher will spawn a fresh one for you.)
 npm run start
 ```
 
