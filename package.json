@@ -3,18 +3,28 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Session timeline sidebar for ZCode, injected via CDP. Upgrade-safe and reversible.",
+  "description": "Session timeline sidebar baked into ZCode's app.asar, with a CDP-based dev workflow.",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
     "build": "node timeline-src/build.mjs",
     "build:dev": "node timeline-src/build.mjs --dev",
+    "install": "node launcher/install.mjs install",
+    "uninstall": "node launcher/install.mjs uninstall",
+    "install:status": "node launcher/install.mjs status",
     "start": "node launcher/launcher.mjs",
     "start:clean": "node launcher/start-zcode-clean.mjs",
     "dev": "node scripts/hot-reload.mjs",
     "probe": "node scripts/probe-dom.mjs",
     "verify": "node scripts/verify-patch.mjs",
+    "build:exe": "npm run build:exe:x64 && npm run build:exe:arm64 && npm run build:exe:uninstaller:x64",
+    "build:exe:x64": "npm run bundle:installer && pkg . --targets node22-win-x64 --no-bytecode --public --output dist-installer/zcode-timeline-installer.exe",
+    "build:exe:arm64": "npm run bundle:installer && pkg . --targets node22-win-arm64 --no-bytecode --public --output dist-installer/zcode-timeline-installer-arm64.exe",
+    "build:exe:uninstaller:x64": "npm run bundle:uninstaller && node scripts/build-uninstaller-exe.mjs x64",
+    "build:exe:uninstaller:arm64": "npm run bundle:uninstaller && node scripts/build-uninstaller-exe.mjs arm64",
+    "bundle:installer": "node installer/bundle.mjs",
+    "bundle:uninstaller": "node installer/bundle-uninstaller.mjs",
     "clean": "node -e \"import('node:fs').then(fs => fs.rmSync('dist', { recursive: true, force: true }))\""
   },
   "dependencies": {
@@ -25,9 +35,20 @@
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "@yao-pkg/pkg": "^5.16.1",
     "esbuild": "^0.24.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "typescript": "^5.6.0"
-  }
+  },
+  "pkg": {
+    "scripts": "installer/installer.cjs",
+    "targets": [
+      "node22-win-x64",
+      "node22-win-arm64"
+    ],
+    "outputPath": "dist-installer",
+    "tmpdir": "dist-installer-tmp"
+  },
+  "bin": "installer/installer.cjs"
 }

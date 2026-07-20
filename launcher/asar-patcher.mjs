@@ -24,6 +24,17 @@ const PROJECT_ROOT = resolve(__dirname, '..');
 
 const MARKER_BEGIN = '/* ::zcode-timeline:bootstrap:begin:: */';
 const MARKER_END = '/* ::zcode-timeline:bootstrap:end:: */';
+const MARKER_BEGIN_RENDERER = '<!-- ::zcode-timeline:renderer:begin:: -->';
+const MARKER_END_RENDERER = '<!-- ::zcode-timeline:renderer:end:: -->';
+const INSTALL_BUNDLE = join(PROJECT_ROOT, 'dist', 'timeline.install.iife.js');
+const INSTALL_BUNDLE_PARTS = ['out', 'zcode-timeline', 'timeline.install.iife.js'];
+// index.html lives under out/renderer, so its ./zcode-timeline URL resolves to
+// this second archive entry. Keep the root entry above for stable inspection.
+const RENDERER_INSTALL_BUNDLE_PARTS = ['out', 'renderer', 'zcode-timeline', 'timeline.install.iife.js'];
+
+const RENDERER_BLOCK = `${MARKER_BEGIN_RENDERER}
+<script src="./zcode-timeline/timeline.install.iife.js" data-zcode-timeline="1"></script>
+${MARKER_END_RENDERER}`;
 
 // Maximum number of `app.asar.original-<hash>` backup files to retain.
 // Override at runtime via the ZCODE_TIMELINE_MAX_BACKUPS env var (e.g.
@@ -71,10 +82,22 @@ function saveState(stateFile, state) {
 }
 
 function patchMainContent(content) {
-  if (content.includes(MARKER_BEGIN)) {
+  if (content.includes(MARKER_BEGIN) && content.includes(MARKER_END)) {
     return { content, changed: false };
   }
   return { content: PREPEND_BLOCK + content, changed: true };
+}
+
+function patchRendererContent(content) {
+  if (content.includes(MARKER_BEGIN_RENDERER) && content.includes(MARKER_END_RENDERER)) {
+    return { content, changed: false };
+  }
+  const headEnd = content.lastIndexOf('</head>');
+  if (headEnd < 0) throw new Error('renderer index.html has no </head> tag');
+  return {
+    content: `${content.slice(0, headEnd)}${RENDERER_BLOCK}\n  ${content.slice(headEnd)}`,
+    changed: true,
+  };
 }
 
 function backupAsar(asarPath, hash, existingBackups) {
@@ -125,33 +148,79 @@ function pruneOldBackups(backups, keep, log) {
   return { kept: toKeep, pruned: toDelete.length, list: toKeep };
 }
 
+/** Extract an archive entry using the host separator first, with fallbacks. */
+function extractAsarFile(asarPath, parts) {
+  const candidates = [...new Set([
+    join(...parts),
+    parts.join('/'),
+    parts.join('\\'),
+  ])];
+  for (const candidate of candidates) {
+    try {
+      return asar.extractFile(asarPath, candidate);
+    } catch {
+      /* try the next path style */
+    }
+  }
+  return null;
+}
+
 /**
- * Cheap marker check without extracting the whole asar. Returns true if the
- * `out/main/index.js` (or `out\main\index.js`) inside the given asar already
- * contains our bootstrap marker.
+ * Single-file SHA-256 hex digest. Public helper re-exported so scripts
+ * and other launchers can share this implementation rather than carrying
+ * their own copy.
  */
-function asarHasMarker(asarPath) {
-  try {
-    const buf = asar.extractFile(asarPath, 'out/main/index.js');
-    if (buf && buf.includes(MARKER_BEGIN)) return true;
-  } catch {
-    /* fall through to windows-style path */
-  }
-  try {
-    const buf = asar.extractFile(asarPath, 'out\\main\\index.js');
-    if (buf && buf.includes(MARKER_BEGIN)) return true;
-  } catch {
-    /* neither path works */
-  }
-  return false;
+export function sha256(p) {
+  return computeFileSha256(p);
+}
+
+function asarHasExpectedInstallBundle(asarPath, expectedBundle) {
+  const rootBundle = extractAsarFile(asarPath, INSTALL_BUNDLE_PARTS);
+  const rendererBundle = extractAsarFile(asarPath, RENDERER_INSTALL_BUNDLE_PARTS);
+  return Boolean(
+    rootBundle && rendererBundle &&
+    rootBundle.equals(expectedBundle) && rendererBundle.equals(expectedBundle)
+  );
+}
+
+/**
+ * Check the main-process and renderer marker pairs without extracting the
+ * entire archive.
+ *
+ * @returns {{main: boolean, renderer: boolean}}
+ */
+export function getAsarMarkers(asarPath) {
+  const main = extractAsarFile(asarPath, ['out', 'main', 'index.js']);
+  const renderer = extractAsarFile(asarPath, ['out', 'renderer', 'index.html']);
+  return {
+    main: Boolean(main && main.includes(MARKER_BEGIN) && main.includes(MARKER_END)),
+    renderer: Boolean(
+      renderer &&
+      renderer.includes(MARKER_BEGIN_RENDERER) &&
+      renderer.includes(MARKER_END_RENDERER)
+    ),
+  };
+}
+
+/**
+ * Extract an asar entry by its path parts. Public helper consolidated here so
+ * launcher/install.mjs and scripts/verify-patch.mjs don't carry duplicates.
+ * Returns null if no path style matches.
+ */
+export function extractEntry(asarPath, parts) {
+  return extractAsarFile(asarPath, parts);
 }
 
 /**
  * Apply the asar patch on demand.
  *
+ * @param {object} [options]
+ * @param {boolean} [options.installMode=false] Embed and wire the self-mounting renderer bundle.
  * @returns {Promise<{
  *   status: 'skipped' | 'patched' | 'failed',
  *   reason?: string,
+ *   locked?: boolean,
+ *   stagedAsar?: string,
  *   asarPath?: string,
  *   currentHash?: string,
  *   previousHash?: string,
@@ -159,44 +228,65 @@ function asarHasMarker(asarPath) {
  *   stateFile?: string,
  * }>}
  */
-export async function ensurePatched({ zcodeExePath, stateFile, stagingDir, maxBackups, onLog } = {}) {
+export async function ensurePatched({ zcodeExePath, stateFile, stagingDir, maxBackups, installMode = false, installBundlePath, onLog } = {}) {
   const zcodeDir = dirname(zcodeExePath);
   const asarPath = join(zcodeDir, 'resources', 'app.asar');
   const statePath = stateFile || join(PROJECT_ROOT, '.state.json');
   const stagingRoot = stagingDir || join(PROJECT_ROOT, '.asar-staging');
+  // The install bundle is normally co-located with the project at
+  // PROJECT_ROOT/dist/timeline.install.iife.js. When called from the
+  // bundled .exe, PROJECT_ROOT is the snapshot path inside the binary and
+  // the actual bundle lives in the cloned install dir — accept an explicit
+  // override.
+  const bundlePath = installBundlePath || INSTALL_BUNDLE;
 
   if (!existsSync(asarPath)) {
     return { status: 'failed', reason: `app.asar not found at ${asarPath}`, asarPath };
   }
 
+  let expectedInstallBundle = null;
+  if (installMode) {
+    if (!existsSync(bundlePath)) {
+      return {
+        status: 'failed',
+        reason: `install bundle not found at ${bundlePath}; run "npm run build" first`,
+        asarPath,
+      };
+    }
+    expectedInstallBundle = readFileSync(bundlePath);
+    if (expectedInstallBundle.length < 1024) {
+      return {
+        status: 'failed',
+        reason: `install bundle is suspiciously small (${expectedInstallBundle.length} bytes)`,
+        asarPath,
+      };
+    }
+  }
+
   const currentHash = computeFileSha256(asarPath);
   const state = loadState(statePath);
+  const markers = getAsarMarkers(asarPath);
+  const installBundleCurrent = !installMode || asarHasExpectedInstallBundle(asarPath, expectedInstallBundle);
+  const requiredPatchPresent = markers.main && (!installMode || (markers.renderer && installBundleCurrent));
 
-  // B2: idempotency must trust the MARKER, not just the hash. A user could
-  // manually restore app.asar.original-XXX back over app.asar (hash matches
-  // state.patchedHash) — but the marker would be missing and 9229 wouldn't
-  // open. Check the marker directly and re-patch when needed.
-  //
-  // ALSO check the marker even when the hash doesn't match state.patchedHash.
-  // Without this, a single-byte mutation of an already-patched asar would
-  // create an unnecessary backup that we'd then prune later — wasting a
-  // ~233 MB copy for no reason.
+  // B2: idempotency trusts archive contents, not just the hash. Install mode
+  // requires both marker pairs and the current self-mounting bundle; dev mode
+  // continues to require only the unchanged main-process CDP marker.
   if (state.patchedHash === currentHash) {
-    if (asarHasMarker(asarPath)) {
+    if (requiredPatchPresent) {
       return {
         status: 'skipped',
-        reason: 'asar already patched at this version',
+        reason: installMode
+          ? 'asar already patched in install mode at this version'
+          : 'asar already patched at this version',
         asarPath, currentHash, stateFile: statePath,
       };
     }
-    // Hash matched but marker missing: someone restored an unpatched copy
-    // (or otherwise corrupted the state). Fall through to re-patch. The
-    // backup logic below will preserve the *previous* original as the
-    // existing backup; we only create a new backup if originalHash is null.
-  } else if (asarHasMarker(asarPath)) {
-    // Hash differs (e.g. user patched manually and state is stale, or a
-    // single-byte mutation shifted the hash) but marker is present: just
-    // refresh state and skip patching. No backup needed.
+    // Hash matched but a required marker or bundle is missing. Fall through
+    // and rebuild the archive without replacing the recorded original backup.
+  } else if (requiredPatchPresent) {
+    // The state is stale but the required patch is complete. Refresh state
+    // without creating another large backup.
     saveState(statePath, {
       originalHash: state.originalHash || currentHash,
       patchedHash: currentHash,
@@ -204,7 +294,7 @@ export async function ensurePatched({ zcodeExePath, stateFile, stagingDir, maxBa
     });
     return {
       status: 'skipped',
-      reason: 'marker present despite hash mismatch; state refreshed',
+      reason: 'required markers and bundle present despite hash mismatch; state refreshed',
       asarPath, currentHash, stateFile: statePath,
     };
   }
@@ -215,7 +305,10 @@ export async function ensurePatched({ zcodeExePath, stateFile, stagingDir, maxBa
   if (!state.originalHash) {
     const r = backupAsar(asarPath, currentHash, backups);
     backupPath = r.path; backups = r.backups;
-  } else if (state.originalHash !== currentHash) {
+  } else if (state.originalHash !== currentHash && state.patchedHash !== currentHash) {
+    // A genuinely new ZCode archive needs a fresh pristine backup. Do not
+    // back up a known patched archive when upgrading it from dev to install
+    // mode or refreshing the embedded timeline bundle.
     const r = backupAsar(asarPath, currentHash, backups);
     backupPath = r.path; backups = r.backups;
   }
@@ -231,7 +324,7 @@ export async function ensurePatched({ zcodeExePath, stateFile, stagingDir, maxBa
     return { status: 'failed', reason: `extractAll failed: ${e.message}`, asarPath, stateFile: statePath };
   }
 
-  // Patch main entry.
+  // Patch main entry. The CDP bootstrap remains unchanged for the dev launcher.
   let mainAbs = join(stagingRoot, 'out\\main\\index.js');
   if (!existsSync(mainAbs)) mainAbs = join(stagingRoot, 'out/main/index.js');
   if (!existsSync(mainAbs)) {
@@ -239,14 +332,32 @@ export async function ensurePatched({ zcodeExePath, stateFile, stagingDir, maxBa
     return { status: 'failed', reason: `main entry not found in staging`, asarPath, stateFile: statePath };
   }
 
-  const content = readFileSync(mainAbs, 'utf8');
-  const { content: newContent, changed } = patchMainContent(content);
-  if (!changed) {
-    saveState(statePath, { originalHash: state.originalHash || currentHash, patchedHash: currentHash, backups });
-    rmSync(stagingRoot, { recursive: true, force: true });
-    return { status: 'skipped', reason: 'marker present in main entry, state refreshed', asarPath, currentHash, stateFile: statePath };
+  const mainPatch = patchMainContent(readFileSync(mainAbs, 'utf8'));
+  if (mainPatch.changed) writeFileSync(mainAbs, mainPatch.content, 'utf8');
+
+  if (installMode) {
+    let rendererAbs = join(stagingRoot, 'out\\renderer\\index.html');
+    if (!existsSync(rendererAbs)) rendererAbs = join(stagingRoot, 'out/renderer/index.html');
+    if (!existsSync(rendererAbs)) {
+      rmSync(stagingRoot, { recursive: true, force: true });
+      return { status: 'failed', reason: 'renderer index.html not found in staging', asarPath, stateFile: statePath };
+    }
+
+    try {
+      const rendererPatch = patchRendererContent(readFileSync(rendererAbs, 'utf8'));
+      if (rendererPatch.changed) writeFileSync(rendererAbs, rendererPatch.content, 'utf8');
+    } catch (e) {
+      rmSync(stagingRoot, { recursive: true, force: true });
+      return { status: 'failed', reason: `renderer patch failed: ${e.message}`, asarPath, stateFile: statePath };
+    }
+
+    const rootBundleDir = join(stagingRoot, ...INSTALL_BUNDLE_PARTS.slice(0, -1));
+    const rendererBundleDir = join(stagingRoot, ...RENDERER_INSTALL_BUNDLE_PARTS.slice(0, -1));
+    mkdirSync(rootBundleDir, { recursive: true });
+    mkdirSync(rendererBundleDir, { recursive: true });
+    copyFileSync(bundlePath, join(rootBundleDir, INSTALL_BUNDLE_PARTS.at(-1)));
+    copyFileSync(bundlePath, join(rendererBundleDir, RENDERER_INSTALL_BUNDLE_PARTS.at(-1)));
   }
-  writeFileSync(mainAbs, newContent, 'utf8');
 
   // **Critical safety**: pack to a temp file first, verify it, THEN rename over original.
   const tmpAsar = `${asarPath}.new`;
@@ -274,6 +385,22 @@ export async function ensurePatched({ zcodeExePath, stateFile, stagingDir, maxBa
       rmSync(stagingRoot, { recursive: true, force: true });
       return { status: 'failed', reason: `packed asar has only ${list?.length ?? 0} entries`, asarPath, stateFile: statePath };
     }
+    const packedMarkers = getAsarMarkers(tmpAsar);
+    if (!packedMarkers.main || (installMode && !packedMarkers.renderer)) {
+      rmSync(tmpAsar, { force: true });
+      rmSync(stagingRoot, { recursive: true, force: true });
+      return {
+        status: 'failed',
+        reason: `packed asar is missing required marker(s): ${JSON.stringify(packedMarkers)}`,
+        asarPath,
+        stateFile: statePath,
+      };
+    }
+    if (installMode && !asarHasExpectedInstallBundle(tmpAsar, expectedInstallBundle)) {
+      rmSync(tmpAsar, { force: true });
+      rmSync(stagingRoot, { recursive: true, force: true });
+      return { status: 'failed', reason: 'packed asar is missing the install bundle', asarPath, stateFile: statePath };
+    }
   } catch (e) {
     if (existsSync(tmpAsar)) rmSync(tmpAsar, { force: true });
     rmSync(stagingRoot, { recursive: true, force: true });
@@ -281,10 +408,8 @@ export async function ensurePatched({ zcodeExePath, stateFile, stagingDir, maxBa
   }
 
   // Atomic swap. We DO NOT fall back to writeFileSync(asarPath, data): a
-  // partial write would corrupt the user's ZCode install permanently.
-  // If the rename fails because ZCode has the file open, we leave the
-  // tmpAsar on disk and ask the user to close ZCode and re-run — never
-  // touching the original asar with a non-atomic write.
+  // partial write would corrupt the user's ZCode install permanently. A lock
+  // failure leaves tmpAsar staged so the install CLI can wait and retry.
   try {
     renameSync(tmpAsar, asarPath);
   } catch (e) {
@@ -292,11 +417,10 @@ export async function ensurePatched({ zcodeExePath, stateFile, stagingDir, maxBa
     const isLocked = e?.code === 'EPERM' || e?.code === 'EACCES' || e?.code === 'EBUSY';
     return {
       status: 'failed',
+      locked: isLocked,
+      stagedAsar: existsSync(tmpAsar) ? tmpAsar : undefined,
       reason: isLocked
-        ? `Could not replace app.asar: ${e.message}.\n` +
-          `  ZCode is running and holds the asar file open. Close all ZCode\n` +
-          `  windows and re-run the launcher — the new asar is staged at\n` +
-          `  ${tmpAsar} and will be swapped in on the next attempt.`
+        ? `Could not replace app.asar: ${e.message}. The new archive remains staged at ${tmpAsar}.`
         : `rename failed: ${e.message}`,
       asarPath, stateFile: statePath,
     };

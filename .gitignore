@@ -2,6 +2,8 @@
 node_modules/
 dist/
 dist-types/
+dist-installer/
+dist-installer-tmp/
 
 # Generated state / staging (machine-local; never commit)
 .state.json
@@ -10,6 +12,8 @@ dist-types/
 # Local scratch dirs created by debug probes
 .test/
 .zcode/
+_inspect/
+.tmp-*.cjs
 
 # Logs
 *.log

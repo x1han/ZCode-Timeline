@@ -262,8 +262,12 @@ async function sessionLoop({ watch = false } = {}) {
       // B4: race the disconnect event against a hard timeout. If the client
       // closes without firing `disconnect` (rare but observed on Windows
       // when the parent target dies), this unblocks the outer loop so we
-      // can re-attach. 60s is generous: a healthy session never trips it,
+      // can re-attach. 15s is generous: a healthy session never trips it,
       // but it keeps the launcher from hanging forever after a zombie.
+      // The heartbeat's "force close" path also calls ctx.client.close(),
+      // which fires the disconnect handler above — so the only time this
+      // timer matters is when neither disconnect nor heartbeat-forced-close
+      // ever fires (a true zombie), and we fall back to finishing anyway.
       await new Promise((resolveWait) => {
         let settled = false;
         const finish = () => {
@@ -276,10 +280,10 @@ async function sessionLoop({ watch = false } = {}) {
         ctx.client.on('disconnect', finish);
         setTimeout(() => {
           if (!settled) {
-            log('Disconnect not received within 60s; forcing re-attach.');
+            log('Disconnect not received within 15s; forcing re-attach.');
             finish();
           }
-        }, 60_000).unref();
+        }, 15_000).unref();
       });
 
       log('CDP disconnected; will re-attach when CDP is back.');

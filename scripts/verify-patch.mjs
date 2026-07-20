@@ -1,36 +1,22 @@
 // scripts/verify-patch.mjs
-// Quick diagnostic: state of the asar patch, CDP endpoint, and bundled IIFE.
+// Diagnostic for the native install markers, embedded bundle, state, and CDP.
 
-import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
+import {
+  extractEntry,
+  getAsarMarkers,
+  sha256,
+} from '../launcher/asar-patcher.mjs';
+import { findZCodeExe } from '../launcher/zcode-finder.mjs';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
 const STATE_FILE = join(PROJECT_ROOT, '.state.json');
-
-const ZCODE_EXE_CANDIDATES = [
-  process.env.ZCODE_EXE,
-  'S:\\ZCode\\ZCode.exe',
-  'C:\\Users\\hxsci\\AppData\\Local\\Programs\\ZCode\\ZCode.exe',
-].filter(Boolean);
-
-function findAsar() {
-  for (const p of ZCODE_EXE_CANDIDATES) {
-    if (!p) continue;
-    const ap = join(dirname(p), 'resources', 'app.asar');
-    if (existsSync(ap)) return { asarPath: ap, fromExe: p };
-  }
-  return null;
-}
-
-function sha256(p) {
-  const data = readFileSync(p);
-  const h = createHash('sha256');
-  h.update(data);
-  return h.digest('hex');
-}
+const INSTALL_BUNDLE_PARTS = ['out', 'zcode-timeline', 'timeline.install.iife.js'];
+const RENDERER_INSTALL_BUNDLE_PARTS = ['out', 'renderer', 'zcode-timeline', 'timeline.install.iife.js'];
 
 async function checkCdp(port) {
   try {
@@ -45,46 +31,63 @@ async function checkCdp(port) {
 }
 
 async function main() {
-  console.log('=== ZCode Timeline — Patch Status ===');
+  const failures = [];
+  console.log('=== ZCode Timeline — Native Install Status ===');
   console.log('');
 
-  // 1. asar
-  const ap = findAsar();
-  if (!ap) {
+  let appAsar = null;
+  try {
+    const found = findZCodeExe();
+    appAsar = join(dirname(found.exePath), 'resources', 'app.asar');
+  } catch (e) {
+    failures.push(e.message);
+  }
+
+  if (!appAsar || !existsSync(appAsar)) {
     console.log('app.asar: NOT FOUND');
-    console.log('  Could not locate ZCode. Set ZCODE_EXE or install under one of:');
-    ZCODE_EXE_CANDIDATES.forEach((p) => console.log('   ', p));
+    failures.push('ZCode app.asar was not found');
   } else {
-    const stat = statSync(ap.asarPath);
-    const hash = sha256(ap.asarPath).slice(0, 16);
+    const stat = statSync(appAsar);
+    const hash = sha256(appAsar).slice(0, 16);
+    const markers = getAsarMarkers(appAsar);
+    const embedded = extractEntry(appAsar, INSTALL_BUNDLE_PARTS);
+    const rendererEmbedded = extractEntry(appAsar, RENDERER_INSTALL_BUNDLE_PARTS);
+
     console.log('app.asar:');
-    console.log('  path:', ap.asarPath);
+    console.log('  path:', appAsar);
     console.log('  size:', stat.size.toLocaleString(), 'bytes');
     console.log('  sha256[0:16]:', hash);
+    console.log('  main marker:', markers.main ? 'YES' : 'NO');
+    console.log('  renderer marker:', markers.renderer ? 'YES' : 'NO');
+    console.log('  embedded bundle:', embedded ? 'YES' : 'NO');
+    console.log('  embedded bundle size:', embedded ? `${embedded.length.toLocaleString()} bytes` : '(missing)');
+    console.log('  renderer-loadable bundle:', rendererEmbedded ? 'YES' : 'NO');
+    console.log('  renderer-loadable bundle size:', rendererEmbedded ? `${rendererEmbedded.length.toLocaleString()} bytes` : '(missing)');
 
-    // check for marker in the asar bytes
-    const buf = readFileSync(ap.asarPath);
-    const hasMarker = buf.includes(Buffer.from('zcode-timeline:bootstrap:begin'));
-    console.log('  patched-in-asar:', hasMarker ? 'YES' : 'NO');
+    if (!markers.main) failures.push('main-process marker is missing');
+    if (!markers.renderer) failures.push('renderer marker is missing');
+    if (!embedded) failures.push('embedded install bundle is missing');
+    if (!rendererEmbedded) failures.push('renderer-loadable install bundle is missing');
   }
 
   console.log('');
-
-  // 2. state
   console.log('.state.json:');
   if (existsSync(STATE_FILE)) {
-    const s = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
-    console.log('  originalHash[0:16]:', s.originalHash?.slice(0, 16) ?? '(none)');
-    console.log('  patchedHash[0:16]:', s.patchedHash?.slice(0, 16) ?? '(none)');
-    console.log('  backups:', (s.backups ?? []).length);
-    for (const b of s.backups ?? []) console.log('   ', b);
+    try {
+      const state = JSON.parse(readFileSync(STATE_FILE, 'utf8'));
+      console.log('  originalHash[0:16]:', state.originalHash?.slice(0, 16) ?? '(none)');
+      console.log('  patchedHash[0:16]:', state.patchedHash?.slice(0, 16) ?? '(none)');
+      console.log('  backups:', (state.backups ?? []).length);
+      for (const backup of state.backups ?? []) console.log('   ', backup);
+    } catch (e) {
+      console.log('  invalid:', e.message);
+      failures.push('.state.json is invalid');
+    }
   } else {
     console.log('  (no state file yet)');
   }
 
   console.log('');
-
-  // 3. CDP endpoint
   const port = process.env.ZCODE_TIMELINE_PORT || 9229;
   console.log(`CDP endpoint (port ${port}):`);
   const cdp = await checkCdp(port);
@@ -94,19 +97,16 @@ async function main() {
     console.log('  Protocol:', cdp.version['Protocol-Version'] || '(unknown)');
   } else {
     console.log('  status: DOWN —', cdp.reason);
-    console.log('  (this is expected if no ZCode has run since the patch was applied)');
+    console.log('  (CDP is optional for native install mode and expected to be down before a restart)');
   }
 
   console.log('');
-
-  // 4. bundle
-  const bundle = join(PROJECT_ROOT, 'dist', 'timeline.iife.js');
-  console.log('Bundle (dist/timeline.iife.js):');
-  if (existsSync(bundle)) {
-    const sz = statSync(bundle).size;
-    console.log('  size:', sz.toLocaleString(), 'bytes', sz > 100_000 ? '(production)' : '(dev)');
+  if (failures.length) {
+    console.error('Verification: FAILED');
+    for (const failure of failures) console.error('  -', failure);
+    process.exitCode = 1;
   } else {
-    console.log('  (missing — run `npm run build`)');
+    console.log('Verification: PASSED');
   }
 }
 

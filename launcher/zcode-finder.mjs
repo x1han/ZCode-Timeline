@@ -1,10 +1,10 @@
 // launcher/zcode-finder.mjs
-// Find a running or installable ZCode.exe.
+// Find a running or installed ZCode executable.
 //
 // Search order:
-//   1. ZCODE_EXE env var (full path to ZCode.exe)
-//   2. Common install dirs (S:\ZCode, %LOCALAPPDATA%\Programs\ZCode\*, etc.)
-//   3. Running process: powershell Get-Process ZCode
+//   1. Running Windows process: PowerShell Get-Process ZCode
+//   2. ZCODE_EXE env var
+//   3. Platform-specific install roots and PATH
 //
 // Returns { exePath, source } or throws.
 
@@ -17,32 +17,46 @@ import { join } from 'node:path';
 const PATH_DELIM = process.platform === 'win32' ? ';' : ':';
 
 function buildCandidates() {
+  const home = homedir();
+  const explicit = [process.env.ZCODE_EXE];
+
+  if (process.platform === 'darwin') {
+    return [
+      ...explicit,
+      '/Applications/ZCode.app/Contents/MacOS/ZCode',
+      join(home, 'Applications', 'ZCode.app', 'Contents', 'MacOS', 'ZCode'),
+      ...pathDirs('ZCode'),
+    ].filter(Boolean);
+  }
+
+  if (process.platform === 'linux') {
+    return [
+      ...explicit,
+      '/opt/ZCode/ZCode',
+      '/usr/local/ZCode/ZCode',
+      join(home, '.local', 'share', 'ZCode', 'ZCode'),
+      ...pathDirs('ZCode'),
+    ].filter(Boolean);
+  }
+
   // Resolve the per-user AppData path dynamically instead of hardcoding a
   // username — works for any user account on the machine.
-  const localAppData = process.env.LOCALAPPDATA || join(homedir(), 'AppData', 'Local');
-  const home = homedir();
-
+  const localAppData = process.env.LOCALAPPDATA || join(home, 'AppData', 'Local');
   return [
-    // 1. Explicit env override always wins.
-    process.env.ZCODE_EXE,
-
-    // 2. Common install roots. Includes both back-slash and forward-slash
-    //    variants since some Windows shells display one or the other.
+    ...explicit,
     'S:\\ZCode\\ZCode.exe',
     'S:\\zcode\\ZCode.exe',
     'C:\\ZCode\\ZCode.exe',
     'C:\\zcode\\ZCode.exe',
-
-    // 3. Per-user AppData (was previously hardcoded to `hxsci`; now generic).
+    'D:\\ZCode\\ZCode.exe',
+    'D:\\zcode\\ZCode.exe',
+    'E:\\ZCode\\ZCode.exe',
+    'E:\\zcode\\ZCode.exe',
     join(localAppData, 'Programs', 'ZCode', 'ZCode.exe'),
     join(localAppData, 'Programs', 'ZCode Desktop', 'ZCode.exe'),
     join(home, 'AppData', 'Local', 'Programs', 'ZCode', 'ZCode.exe'),
-
-    // 4. System-wide installs.
     'C:\\Program Files\\ZCode\\ZCode.exe',
     'C:\\Program Files (x86)\\ZCode\\ZCode.exe',
-
-    // 5. Anywhere on PATH (rare but cheap to check).
     ...pathDirs('ZCode.exe'),
   ].filter(Boolean);
 }
@@ -67,8 +81,9 @@ function tryFile(p) {
 }
 
 function tryRunning() {
-  // Use Get-Process to ask for the path of a running ZCode.exe instance.
-  // Returns null if ZCode is not running.
+  // Preserve the Windows Get-Process fallback so nonstandard installs can be
+  // discovered from an already-running ZCode instance.
+  if (process.platform !== 'win32') return null;
   try {
     const cmd = `powershell -NoProfile -Command "$p = Get-Process -Name 'ZCode' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Path; if ($p) { $p } else { '' }"`;
     const out = execSync(cmd, { encoding: 'utf8', timeout: 5000, windowsHide: true }).trim();
@@ -79,7 +94,10 @@ function tryRunning() {
 }
 
 export function findZCodeExe() {
-  // If ZCode is already running, prefer its path.
+  const explicit = tryFile(process.env.ZCODE_EXE);
+  if (explicit) return { exePath: explicit, source: 'env' };
+
+  // If ZCode is already running, prefer its path over inferred candidates.
   const running = tryRunning();
   if (running && tryFile(running)) return { exePath: running, source: 'running' };
 
@@ -88,10 +106,8 @@ export function findZCodeExe() {
     if (abs) return { exePath: abs, source: 'candidate' };
   }
   throw new Error(
-    'ZCode.exe not found.\n' +
-      '  Set ZCODE_EXE env var to its full path, e.g.:\n' +
-      '    set ZCODE_EXE=C:\\Path\\To\\ZCode.exe\n' +
-      '  Or install ZCode under one of the search roots:\n' +
-      '    S:\\ZCode, C:\\ZCode, %LOCALAPPDATA%\\Programs\\ZCode, or C:\\Program Files\\ZCode.'
+    'ZCode executable not found.\n' +
+      '  Set ZCODE_EXE to the full executable path.\n' +
+      '  The installer also searches common Windows, macOS, and Linux roots plus PATH.'
   );
 }
