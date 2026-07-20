@@ -1,14 +1,15 @@
 // timeline-src/message-collector.ts
 // Walks the page to identify user messages, attaches stable identifiers,
-// exposes position/text/reply-preview helpers, and watches for changes via
+// exposes position/text helpers, and watches for changes via
 // MutationObserver (throttled).
 
 import {
+  BUILTIN_USER_SELECTORS,
   DEFAULT_USER_SELECTORS,
   findScrollContainer,
   selectAllUserMessages,
 } from './dom-probe';
-import { setMessages, setScrollContainer } from './store';
+import { setMessages } from './store';
 
 export interface MessageAnchor {
   /** stable id (preferred: data-message-id attribute); else generated */
@@ -17,8 +18,6 @@ export interface MessageAnchor {
   el: HTMLElement;
   /** the user message text (truncated) */
   text: string;
-  /** best-effort preview of the next sibling's reply text (truncated) */
-  replyPreview: string;
   /** cached getBoundingClientRect accessor */
   rect: () => DOMRect;
   /** cached absolute top, recomputed on scroll */
@@ -47,52 +46,107 @@ function extractId(el: HTMLElement): string {
   return genId();
 }
 
-function extractText(el: HTMLElement): string {
-  // Prefer textContent (cheap, no layout). Only fall back to innerText when
-  // the result is suspiciously short — some chat UIs render the visible text
-  // via ::before / ::after content which innerText picks up but textContent
-  // doesn't. The fallback path runs at most once per element per collect.
-  let raw = el.textContent || '';
-  raw = raw.replace(/\s+/g, ' ').trim();
-  if (raw.length < 8) {
-    raw = (el.innerText || raw || '').replace(/\s+/g, ' ').trim();
+// Fragments used to strip ZCode's per-message action bar from the trailing
+// end of the user-message text. The action bar is whatever ZCode appends
+// after the user message — typically an HH:MM (or HH:MM:SS) timestamp and
+// zero or more action verbs like 编辑 / 复制 / 删除. We strip these so the
+// tooltip + bar title only show the actual user message.
+const ACTION_WORDS =
+  String.raw`(?:已)?(?:编辑|删除|复制|回复|引用|撤回|转发|分享|赞|收藏|更多|edited|deleted|copied)`;
+// Match HH:MM with optional :SS.
+const TS = String.raw`\d{1,2}:\d{2}(?::\d{2})?`;
+// Whitespace + Unicode separators (Zs) + Unicode punctuation (P) via the
+// /u regex flag. Tolerant of trailing 。 ， ； ： ！ ？ · — — between user
+// text and the trailing timestamp+action block. Previously we used a
+// narrow whitelist ([\s\u00A0\u2003\u3000]) which silently failed on
+// CJK punctuation the user message legitimately ended with, leaking the
+// action bar into the tooltip. The blacklist approach covers every
+// separator ZCode may insert without enumerating each codepoint.
+const W  = String.raw`[\s\p{Z}\p{P}]*`;
+// Optional middle-dot / dash separator placed between timestamp and
+// action-word when ZCode writes e.g. "17:55 · 编辑".
+const S  = String.raw`(?:[·\u00B7\-–—][\s\p{Z}\p{P}]*)?`;
+
+// Selectors that identify ZCode's per-message action bar in the DOM.
+// Ordered by stability: ARIA / data attributes first (most stable across
+// ZCode's style churn), class heuristics last (most brittle).
+const ACTION_BAR_SELECTORS = [
+  '[role="toolbar"]',
+  '[role="group"][aria-label*="message actions" i]',
+  '[aria-label*="message actions" i]',
+  '[data-message-actions]',
+  '[data-testid*="message-actions" i]',
+  '[class*="messageActions" i]',
+  '[class*="MessageActions" i]',
+  '[class*="message-actions" i]',
+  '[class*="Message-actions" i]',
+];
+// Subtrees whose trimmed text is ONLY a sequence of timestamp and/or
+// action-word fragments separated by whitespace / Unicode separators /
+// Unicode punctuation. Captures action bars with no ARIA / class hook
+// AND post-edit indicators like "[已编辑]" or "[编辑][复制]" (the
+// brackets are just punctuation) AND edited-state marks that show
+// only "编辑" without a timestamp. Safe against legitimate user
+// messages that contain the word "编辑" because such messages have
+// other text that fails the fragment-only check.
+const FRAGMENT_RE = String.raw`(?:\d{1,2}:\d{2}(?::\d{2})?|(?:已)?(?:编辑|删除|复制|回复|引用|撤回|转发|分享|赞|收藏|更多))`;
+const ACTION_BAR_CONTENT_RE = new RegExp(
+  String.raw`^[\s\p{Z}\p{P}]*(?:${FRAGMENT_RE}[\s\p{Z}\p{P}]*)+$`,
+  'u',
+);
+
+// Precompile the 4-step extractText fallback chain at module load. Compiling
+// each `new RegExp` per call costs ~tens of microseconds and adds up over
+// 100+ messages per MutationObserver tick. CRITICAL: the source strings MUST
+// stay byte-identical to the originals so esbuild produces the same compiled
+// output (minified names `Wl/ao/br/eo` must keep matching the local consts).
+const EXTRACT_RE_TS_ACTIONS = new RegExp(`${W}${TS}${W}${S}${W}${ACTION_WORDS}?${W}$`, 'u');
+const EXTRACT_RE_ACTIONS_TS = new RegExp(`${W}${ACTION_WORDS}${W}${S}${W}${TS}${W}$`, 'u');
+const EXTRACT_RE_TS = new RegExp(`${W}${TS}${W}$`, 'u');
+const EXTRACT_RE_ACTIONS = new RegExp(`${W}${ACTION_WORDS}${W}$`, 'u');
+
+function isActionBarElement(node: Element): boolean {
+  if (node.matches(ACTION_BAR_SELECTORS.join(','))) return true;
+  const txt = (node.textContent || '').trim();
+  if (txt.length > 0 && txt.length < 120 && ACTION_BAR_CONTENT_RE.test(txt)) {
+    return true;
   }
-  return raw.slice(0, 400);
+  return false;
 }
 
-function extractReplyPreview(el: HTMLElement): string {
-  // Try to find the very next sibling/parent sibling message element.
-  let n: Element | null = el.nextElementSibling;
-  while (n) {
-    const role =
-      n.getAttribute?.('data-message-author-role') ||
-      n.getAttribute?.('data-role') ||
-      n.getAttribute?.('data-author') ||
-      '';
-    if (role === 'assistant' || role === 'model') {
-      const t = extractText(n as HTMLElement);
-      if (t) return t;
-    }
-    // skip child container that holds both user+assistant
-    const inner = (n as HTMLElement).querySelector?.(
-      '[data-message-author-role="assistant"], [data-role="assistant"], [data-author="assistant"]'
-    );
-    if (inner) {
-      const t = extractText(inner as HTMLElement);
-      if (t) return t;
-    }
-    n = n.nextElementSibling;
+function extractText(el: HTMLElement): string {
+  // Primary defense: walk a CLONE of `el`, remove any descendant whose
+  // subtree looks like ZCode's per-message action bar. Reading textContent
+  // from the cleaned clone therefore returns just the user message,
+  // bypassing all the regex subtleties (multiple action verbs, mixed
+  // punctuation, ZWJ separators, etc.) that bit the previous design.
+  // The clone means we never mutate the live DOM.
+  const clone = el.cloneNode(true) as HTMLElement;
+  for (const sub of Array.from(clone.querySelectorAll('*'))) {
+    if (isActionBarElement(sub)) sub.remove();
   }
-  // Fallback: look at the parent and pick the assistant sibling.
-  const parent = el.parentElement;
-  if (parent) {
-    const candidate = parent.nextElementSibling;
-    if (candidate) {
-      const t = extractText(candidate as HTMLElement);
-      if (t) return t.slice(0, 400);
-    }
+  // Belt-and-braces: even after selector-based pruning, if the clone's
+  // last direct child still reads as timestamp+actions-only, drop it too.
+  const last = clone.lastElementChild;
+  if (last && isActionBarElement(last)) last.remove();
+
+  // Cheap text pull from the cleaned clone. Falls back to innerText only
+  // when the textContent is suspiciously short (CSS ::before / ::after
+  // content), so most messages use the textContent path.
+  let raw = (clone.textContent || '').replace(/\s+/g, ' ').trim();
+  if (raw.length < 8) {
+    raw = (clone.innerText || raw || '').replace(/\s+/g, ' ').trim();
   }
-  return '';
+  // Defense-in-depth: regex strip in case DOM pruning missed the bar
+  // (e.g., a ZCode update that puts timestamp text inline with user text
+  // and a no-class wrapper around it). \p{Z}\p{P} in W makes this robust
+  // to whatever separator ZCode chooses. Regexes are precompiled at module
+  // load (see EXTRACT_RE_*) for per-message speed.
+  raw = raw.replace(EXTRACT_RE_TS_ACTIONS, '');
+  raw = raw.replace(EXTRACT_RE_ACTIONS_TS, '');
+  raw = raw.replace(EXTRACT_RE_TS, '');
+  raw = raw.replace(EXTRACT_RE_ACTIONS, '');
+  return raw.slice(0, 400);
 }
 
 function getAbsoluteTopOf(el: HTMLElement, container: HTMLElement | null): number {
@@ -136,23 +190,44 @@ function getScrollOffsetTop(el: HTMLElement): number {
   return el.offsetTop;
 }
 
-export function collectMessages(): {
-  anchors: MessageAnchor[];
-  scrollContainer: HTMLElement | null;
-} {
+// Per-element cache. Keyed on the HTMLElement itself so the entry is GC'd
+// automatically when ZCode removes the node from the DOM. Stores (text, id)
+// plus a short content hash so we can detect streaming mutations / edits
+// without running extractText on every collect for unchanged nodes.
+interface CacheEntry { text: string; id: string; hash: string; }
+const anchorCache = new WeakMap<HTMLElement, CacheEntry>();
+
+// Cheap content fingerprint: first 60 chars of textContent + total length.
+// Detects both edits (text differs) and ZCode swapping in a fresh node
+// (the new element is a different WeakMap key, so it starts empty).
+function contentHashOf(el: HTMLElement): string {
+  const t = (el.textContent || '');
+  return `${t.length}:${t.slice(0, 60)}`;
+}
+
+export function collectMessages(): MessageAnchor[] {
   const elements = selectAllUserMessages();
   const container = elements[0] ? findScrollContainer(elements[0]) : null;
-  setScrollContainer(container);
 
   const anchors: MessageAnchor[] = elements.map((el) => {
     const scrollContentTop = getScrollContentTop(el, container);
     const scrollOffsetTop = getScrollOffsetTop(el);
-    const id = extractId(el);
+    const hash = contentHashOf(el);
+    const cached = anchorCache.get(el);
+    let text: string;
+    let id: string;
+    if (cached && cached.hash === hash && el.isConnected) {
+      text = cached.text;
+      id = cached.id;
+    } else {
+      text = extractText(el);
+      id = extractId(el);
+      anchorCache.set(el, { text, id, hash });
+    }
     return {
       id,
       el,
-      text: extractText(el),
-      replyPreview: extractReplyPreview(el),
+      text,
       rect: () => el.getBoundingClientRect(),
       getAbsoluteTop: () => getAbsoluteTopOf(el, container),
       scrollContentTop,
@@ -160,7 +235,7 @@ export function collectMessages(): {
     };
   });
 
-  return { anchors, scrollContainer: container };
+  return anchors;
 }
 
 let watchHandle: { stop: () => void } | null = null;
@@ -192,10 +267,16 @@ export function watchMessages(onChange: (a: MessageAnchor[]) => void): { stop: (
   const tick = () => {
     pending = false;
     try {
-      const { anchors, scrollContainer } = collectMessages();
-      // Narrow the MO scope to the chat container (or fall back to body if
-      // none was found). Re-narrowing is cheap.
-      observeTarget(scrollContainer ?? document.body);
+      const anchors = collectMessages();
+      // Always observe document.body with subtree:true. The previous design
+      // narrowed the MO scope to the chat container itself, which broke on
+      // conversation switch: the old container (now detached) had the MO,
+      // the new container had none, and no mutations fired onMutate until
+      // the user manually scrolled or resized. With body+subtree the MO
+      // fires for any DOM change anywhere, and tick() re-resolves the
+      // chat container via findScrollContainer every time. The pending
+      // flag (200ms debounce) keeps the cost negligible.
+      observeTarget(document.body);
 
       const sig = anchors.map((a) => `${a.id}:${Math.round(a.getAbsoluteTop() / 4)}`).join('|');
       if (sig !== lastSig) {
@@ -247,6 +328,6 @@ export function refreshCustomSelectors(next: string[]) {
   const replacement = next.length === 0 ? BUILTIN_USER_SELECTORS.slice() : next.slice();
   DEFAULT_USER_SELECTORS.splice(0, DEFAULT_USER_SELECTORS.length, ...replacement);
   // re-collect now so the panel reflects the new selectors immediately
-  const { anchors } = collectMessages();
+  const anchors = collectMessages();
   setMessages(anchors);
 }

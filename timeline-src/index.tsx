@@ -52,7 +52,7 @@ function stopWatcher() {
 function mount() {
   try {
     // Run initial collect BEFORE mounting, so the panel has content on first render.
-    const { anchors } = collectMessages();
+    const anchors = collectMessages();
     setMessages(anchors);
 
     injectStyles();

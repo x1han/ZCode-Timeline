@@ -4,13 +4,14 @@
 import { build } from 'esbuild';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { existsSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
 const DIST_DIR = resolve(PROJECT_ROOT, 'dist');
 const ENTRY = resolve(PROJECT_ROOT, 'timeline-src', 'index.tsx');
 const OUTFILE = resolve(DIST_DIR, 'timeline.iife.js');
+const INSTALL_OUTFILE = resolve(DIST_DIR, 'timeline.install.iife.js');
 
 if (!existsSync(DIST_DIR)) mkdirSync(DIST_DIR, { recursive: true });
 
@@ -57,3 +58,41 @@ if (sz < 1024) {
 renameSync(TMP_OUTFILE, OUTFILE);
 
 console.log(`[build] wrote ${OUTFILE} (${sz} bytes)`);
+
+// Install mode uses a second, self-mounting artifact. Keep the plain IIFE byte-
+// for-byte unchanged because the dev launcher still wraps and invokes it itself.
+const bundleJs = readFileSync(OUTFILE, 'utf8');
+const installJs = `;(function () {
+  if (window.top !== window) return;
+  try {
+${bundleJs}
+    const mountTimeline = () => {
+      try {
+        if (typeof window.__ZCODE_TIMELINE_MOUNT__ === 'function') {
+          window.__ZCODE_TIMELINE_LOADED__ = true;
+          window.__ZCODE_TIMELINE_MOUNT__();
+        }
+      } catch (e) {
+        console.error('[zcode-timeline] mount failed:', e);
+      }
+    };
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', mountTimeline, { once: true });
+    } else {
+      mountTimeline();
+    }
+  } catch (e) {
+    console.error('[zcode-timeline] bundle failed:', e);
+  }
+})();
+`;
+const installTmp = `${INSTALL_OUTFILE}.tmp`;
+writeFileSync(installTmp, installJs, 'utf8');
+const installSize = statSync(installTmp).size;
+if (installSize < sz) {
+  rmSync(installTmp, { force: true });
+  throw new Error(`install bundle is smaller than the plain bundle (${installSize} < ${sz}); aborting rename`);
+}
+renameSync(installTmp, INSTALL_OUTFILE);
+
+console.log(`[build] wrote ${INSTALL_OUTFILE} (${installSize} bytes)`);

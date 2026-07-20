@@ -2,9 +2,10 @@
  * Codex-style fixed panel on the chat's left side.
  *
  * Plain stack of bars — no pill background. Bars packed with light gap.
- * Gray (light) + black palette. Rail grows to fit all bars (capped at
- * 85vh); never internally scrolls — that would decouple the primary
- * highlight from the chat viewport.
+ * Gray (light) + black palette. Rail caps at 50 bars (405px tall) so even
+ * 100+ user messages stay navigable; beyond that the rail scrolls via
+ * mouse wheel — the scrollbar itself is fully hidden (no right-side
+ * chrome visible).
  */
 
 .zcode-timeline-host {
@@ -25,29 +26,99 @@
 
 /* ============== Rail ============== */
 .zcode-timeline-rail {
-  /* A3: rail must NOT capture clicks meant for the chat underneath.
-   * The bar buttons opt back in to pointer-events. The gap/padding regions
-   * around the bars let mouse events pass through to the chat. */
-  pointer-events: none;
+  /* pointer-events: auto so the rail captures mouse wheel input — the
+   * scrollbar itself is hidden (rules below) but wheel still drives
+   * overflow-y:auto. Side effect: clicks on the rail's empty space
+   * (the 4px top + 4px bottom padding, the 3px gaps between bars, and
+   * the ~3-5px on each side of the centered 14-17px bar) are captured
+   * here instead of falling through to the chat underneath. */
+  pointer-events: auto;
   position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 3px;                          /* 1.5x spacing (5 + 3 = 8 per slot) */
+  gap: 3px;                          /* 5 (bar) + 3 (gap) = 8 per slot */
   width: 24px;
   padding: 4px 0;
   margin: 0;
-  /* A12: let the rail grow with the number of bars instead of clipping at
-   * 440px with internal scroll. Internal scroll decoupled from the chat
-   * scroll, so the primary bar could disappear out of the rail's own
-   * viewport. The host's `top: 50%; transform: translateY(-50%)` keeps it
-   * vertically centered regardless of rail height.
+  /* Cap at exactly 50 bars tall. For ≤50 bars the rail is shorter and
+   * stays centered vertically (host uses top:50% + translateY(-50%)).
+   * For >50 bars the rail locks at 405px and overflow-y:auto takes over
+   * — the user wheels over the rail to navigate beyond. The Panel
+   * useEffect continues to call scrollIntoView({block:'center'}) on the
+   * active bar so it stays in view as the chat scrolls. The scrollbar
+   * itself is intentionally hidden (see scrollbar-width and the
+   * ::-webkit-scrollbar rule below) so the rail shows zero chrome.
    *
-   * Capping at 85vh prevents the rail from extending past the viewport on
-   * very long sessions; when it does, JS clamps the top edge in
-   * TimelinePanel.tsx so the rail never starts above y=0. */
-  max-height: 85vh;
+   * Math: 50 bars × 5px + 49 gaps × 3px + 4+4 padding = 405px. */
+  max-height: 405px;
+  overflow-y: auto;
+  /* Firefox 64+: hide the scrollbar without disabling overflow. */
+  scrollbar-width: none;
   z-index: 2147483640;
+}
+
+/* WebKit/Chromium/Safari: also hide the scrollbar. Keeping the selector
+ * (with width:0 / display:none) instead of deleting it makes the
+ * override explicit and survives "Initialize-style" injection from
+ * ZCode's host page that might otherwise re-add a default WebKit
+ * scrollbar to scrollable elements. */
+.zcode-timeline-rail::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+  display: none;
+}
+
+/* ============== Wrapper around rail (hosts absolute-positioned chevrons) ============== */
+/* The wrapper reserves vertical padding so the chevron strokes (≈8px tall
+ * with 3px round strokes) sit inside the padding zone without overlapping
+ * the first/last bar. 12px on each side gives ~8px of visual breathing
+ * room between the indicator's stroke end and the first/last bar. The
+ * wrapper's padding flows into the host's auto-height; the host's
+ * `top:50%; transform:translateY(-50%)` compensates so the rail's center
+ * stays put in the viewport. */
+.zcode-timeline-rail-wrapper {
+  position: relative;
+  padding: 12px 0;
+}
+
+/* ============== Chevron (overflow indicators) ============== */
+/* Static ∧ / ∨ caret markers at the top and bottom of the rail,
+ * signaling "more bars scroll this way". Drawn as SVG polylines with:
+ *   - stroke-width 3px  → same thickness as the inactive bar dot
+ *   - stroke-linecap round + stroke-linejoin round  → ends and apex
+ *     are perfect hemispheres, matching the bar-dot's border-radius:999px
+ * So each chevron visually reads as "two short thick pill-bars meeting
+ * at a rounded peak" — same pill-shape grammar as the rest of the rail.
+ * Color matches the inactive bar dot. Rendered as siblings of the rail
+ * inside the wrapper (NOT inside the rail's flex column), so they don't
+ * take flex slots or contribute to scrollHeight. Conditional render —
+ * Panel's overflow useEffect removes them when there's no overflow in
+ * that direction. */
+.zcode-timeline-chevron {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 14px;
+  height: 8px;
+  pointer-events: none;
+  z-index: 2;
+  color: rgba(180, 185, 195, 0.55);  /* matches default bar-dot fill */
+}
+.zcode-timeline-chevron--up   { top: 0; }
+.zcode-timeline-chevron--down { bottom: 0; }
+.zcode-timeline-chevron svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 3;                          /* matches .zcode-timeline-bar-dot height */
+  stroke-linecap: round;                    /* hemispherical ends → like bar-dot pill caps */
+  stroke-linejoin: round;                   /* apex is rounded instead of mitered peak */
+}
+@media (prefers-color-scheme: dark) {
+  .zcode-timeline-chevron { color: rgba(170, 175, 185, 0.45); }
 }
 
 /* ============== Bar ============== */
@@ -66,9 +137,9 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: width 140ms cubic-bezier(0.4, 0, 0.2, 1),
-              height 140ms cubic-bezier(0.4, 0, 0.2, 1),
-              transform 140ms cubic-bezier(0.4, 0, 0.2, 1);
+  transition: width 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              height 220ms cubic-bezier(0.4, 0, 0.2, 1),
+              transform 220ms cubic-bezier(0.4, 0, 0.2, 1);
 }
 
 .zcode-timeline-bar-dot {
@@ -77,9 +148,9 @@
   height: 3px;
   border-radius: 999px;
   background: rgba(180, 185, 195, 0.55);   /* lighter gray (default) */
-  transition: background-color 140ms ease,
-              height 140ms ease,
-              width 140ms ease;
+  transition: background-color 220ms ease,
+              height 220ms ease,
+              width 220ms ease;
 }
 
 /* Staircase:
@@ -149,15 +220,4 @@
 @keyframes zcode-tl-fade-in {
   from { opacity: 0; transform: translateX(-4px); }
   to   { opacity: 1; transform: translateX(0); }
-}
-
-/* ============== Flash on jumped-to message ============== */
-.zcode-tl-flash {
-  animation: zcode-tl-flash-anim 1.4s ease-out;
-}
-
-@keyframes zcode-tl-flash-anim {
-  0%   { background-color: transparent; box-shadow: 0 0 0 0 transparent; }
-  10%  { background-color: rgba(0, 0, 0, 0.10); box-shadow: 0 0 0 6px rgba(0, 0, 0, 0.20); }
-  100% { background-color: transparent; box-shadow: 0 0 0 0 transparent; }
 }

@@ -10,6 +10,7 @@
 // tooltip popup.
 
 import * as React from 'react';
+import { requestHoverClear, setHovered, setTooltipId } from './store';
 import type { MessageAnchor } from './message-collector';
 import { scrollToAnchor } from './scroll-to';
 
@@ -56,7 +57,15 @@ const Bar: React.FC<Props> = ({ anchor, index, primaryIndex, setPrimary, setTool
   };
 
   const onMouseLeave = () => {
-    setPrimary(null);
+    // Debounced clear of the hover-driven primary. The previous
+    // immediate setPrimary(null) made the active highlight snap back
+    // to cachedCenterIndex mid-decision: when the user moved the cursor
+    // across the gap between two bars, every brief mouse-out cancelled
+    // the hover immediately. requestHoverClear schedules the clear
+    // after 200ms; if the cursor re-enters this bar or any other bar
+    // within that window, setHovered() (called from onMouseEnter)
+    // cancels the pending clear so the active highlight stays put.
+    requestHoverClear(anchor.id);
     clearTooltipTimer();
     setTooltip(null);
   };
@@ -71,13 +80,24 @@ const Bar: React.FC<Props> = ({ anchor, index, primaryIndex, setPrimary, setTool
   };
 
   const onBlur = () => {
+    // Keyboard blur clears immediately — no debounce. A tab-focused
+    // bar that loses focus doesn't have a cursor that could "re-enter"
+    // within the 200ms debounce window, so the delay would just feel
+    // sluggish without buying anything.
     setPrimary(null);
     clearTooltipTimer();
     setTooltip(null);
   };
 
-  // Cleanup timer on unmount.
-  React.useEffect(() => clearTooltipTimer, []);
+  // Cleanup tooltip timer on unmount. The click-pin timer is owned by
+  // store.ts (centralized so rapid cross-bar clicks don't have stale
+  // per-instance timers clearing each other's pins), so we don't touch
+  // it here.
+  React.useEffect(() => {
+    return () => {
+      clearTooltipTimer();
+    };
+  }, []);
 
   return (
     <button
@@ -91,12 +111,36 @@ const Bar: React.FC<Props> = ({ anchor, index, primaryIndex, setPrimary, setTool
       onBlur={onBlur}
       onClick={(e) => {
         e.preventDefault();
+
+        // Drop hover-primary so the priority cascade falls through to
+        // cachedCenterIndex. We deliberately do NOT set a click-pin here.
+        // The earlier "click-pin for PIN_HOLD_MS then yield" design
+        // produced the visible 1 → 5 → 4 → 3 → 2 → 1 jump on long-
+        // distance clicks: pin held active=1 for 800ms, then expired
+        // MID-SCROLL and cachedCenterIndex (which was on bar 5 because
+        // the chat was still mid-animation) took over — so the active
+        // highlight jumped from 1 to 5, then tracked the rest of the
+        // scroll. Letting cachedCenterIndex drive active from t=0
+        // means the active highlight smoothly tracks the scroll
+        // (10 → 9 → 8 → … → 1) instead of pin-locking-then-jumping.
+        setHovered(null);
+
         onPick(anchor);
-        scrollToAnchor(anchor);
-        // A2: clicking a bar scrolls the page so the bar (and the mouse) moves
-        // out from under the cursor. The browser does NOT fire mouseleave when
-        // the element moves away — only when the mouse does. Clear tooltip
-        // explicitly so it doesn't float over the new scroll position.
+
+        // Scroll the target prompt to viewport vertical center. If the
+        // clicked anchor's element was detached (ZCode just swapped
+        // placeholder → finalized DOM for a fresh prompt), scrollToAnchor
+        // refreshes via collectMessages and resolves to the element at
+        // the same index, falling back to id-lookup, falling back to
+        // last-anchor only when the original click was the last bar.
+        // Without this, the "user just sent a prompt → new bar appears
+        // at bottom → click does nothing" bug (Bug B) recurs.
+        scrollToAnchor(anchor, index);
+
+        // Clicking a bar scrolls the page so the bar (and the mouse) move
+        // out from under the cursor. The browser does NOT fire mouseleave
+        // when the element moves away — only when the mouse does — so we
+        // clear tooltip explicitly to avoid it floating over the new pos.
         setTooltip(null);
       }}
       aria-label={displayTitle}
