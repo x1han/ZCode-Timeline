@@ -24,11 +24,11 @@
 Download the latest release zip and run the installer.
 
 1. Open the [latest release page](https://github.com/x1han/ZCode-Timeline/releases/latest).
-2. Download `zcode-timeline-windows.zip` (or `zcode-timeline-windows-arm64.zip` for ARM Windows). The zip contains:
-   - `zcode-timeline-installer.exe` — installs or upgrades the timeline
-   - `zcode-timeline-uninstaller.exe` — restores the original ZCode `app.asar`
+2. Download `zcode-timeline-windows-vX.Y.Z-x64.zip` (or `zcode-timeline-windows-vX.Y.Z-arm64.zip` for ARM Windows). The version is in the zip name, so multiple releases can coexist in your Downloads folder without overwriting. The zip contains:
+   - `zcode-timeline-installer-vX.Y.Z-x64.exe` — installs or upgrades the timeline
+   - `zcode-timeline-uninstaller-vX.Y.Z-x64.exe` — restores the original ZCode `app.asar`
 3. Extract the zip anywhere (Desktop is fine).
-4. Double-click `zcode-timeline-installer.exe`.
+4. Double-click the installer `.exe`.
 5. If ZCode is currently running, the installer will offer a 5-second countdown before closing it. Press `Ctrl+C` in the console window to cancel.
 6. Wait for the installer to finish. It auto-detects your ZCode installation, backs up the original `app.asar`, embeds the timeline bundle, atomically swaps the patched archive into place, and re-launches ZCode.
 
@@ -52,7 +52,7 @@ The release zip is Windows-only because the install flow patches `app.asar` in p
 When a new timeline version is released:
 
 1. Download the latest release zip (same as install).
-2. Double-click `zcode-timeline-installer.exe` again. It detects the existing install and replaces the embedded bundle without touching your ZCode install.
+2. Double-click the new release's installer `.exe`. It detects the existing install and replaces the embedded bundle without touching your ZCode install.
 3. Restart ZCode if the installer did not do so automatically.
 
 The original `app.asar` backup from your first install is preserved on disk; you can always go back to it.
@@ -61,7 +61,7 @@ The original `app.asar` backup from your first install is preserved on disk; you
 
 ## Uninstalling
 
-Double-click `zcode-timeline-uninstaller.exe` from the same release zip.
+Double-click the release zip's uninstaller `.exe`.
 
 The uninstaller mirrors the installer: 5-second countdown → close ZCode → restore original `app.asar` from the backup → remove the install directory → re-launch ZCode. After it finishes, ZCode is back to its pristine, un-timeline state.
 
@@ -112,7 +112,7 @@ Modifying `app.asar` inside a signed `.app` bundle invalidates the code signatur
 
 ### The timeline looks wrong after a ZCode update
 
-ZCode's auto-updater may have replaced `resources/app.asar` with a fresh archive. Re-run `zcode-timeline-installer.exe` from the release zip — the installer detects the new archive, takes a fresh backup of the pristine archive, and re-embeds the timeline.
+ZCode's auto-updater may have replaced `resources/app.asar` with a fresh archive. Re-run the release zip's installer — the installer detects the new archive, takes a fresh backup of the pristine archive, and re-embeds the timeline.
 
 ---
 

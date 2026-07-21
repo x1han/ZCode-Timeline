@@ -177,6 +177,22 @@ export async function main() {
 
   log('=== ZCode Timeline Installer ===');
 
+  // Windows-only. The .exe is built for Windows targets only (see
+  // package.json pkg.targets + scripts/build-release.mjs) — running this
+  // binary on macOS or Linux will fail in subtle ways (PowerShell probes,
+  // taskkill, .asar byte-for-byte writes that break macOS code signature,
+  // etc.). Surface an explicit error immediately instead of letting the
+  // failure cascade.
+  if (process.platform !== 'win32') {
+    err('This installer is Windows-only. Detected platform: ' + process.platform);
+    err('macOS and Linux are not currently supported by the .exe release.');
+    err('On macOS/Linux, use the dev launcher instead:');
+    err('  git clone https://github.com/x1han/ZCode-Timeline');
+    err('  cd ZCode-Timeline && npm install && npm run install');
+    pauseOnError();
+    process.exit(1);
+  }
+
   // 1. Prerequisite check
   log('Checking prerequisites...');
   const checks = [

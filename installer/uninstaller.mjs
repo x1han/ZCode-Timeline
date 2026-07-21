@@ -137,6 +137,21 @@ export async function main() {
 
   log('=== ZCode Timeline Uninstaller ===');
 
+  // Windows-only. Same rationale as installer.mjs — the uninstaller is
+  // packaged as a Windows .exe and the underlying restoreOriginal() flow
+  // relies on Windows file semantics (rename over a locked file, NTFS
+  // perms, etc.). Surface an explicit error on non-Windows so users
+  // running a downloaded .exe on macOS/Linux get a clear message instead
+  // of a stack trace from a half-completed restore.
+  if (process.platform !== 'win32') {
+    err('This uninstaller is Windows-only. Detected platform: ' + process.platform);
+    err('macOS and Linux are not currently supported by the .exe release.');
+    err('On macOS/Linux, use the dev launcher instead:');
+    err('  cd ~/.zcode-timeline && node launcher/install.mjs uninstall');
+    pauseOnError();
+    process.exit(1);
+  }
+
   // 1. Detect ZCode (and confirm the timeline is actually installed).
   log('Detecting ZCode installation...');
   let zcodeInfo;
