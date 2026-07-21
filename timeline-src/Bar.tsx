@@ -114,15 +114,24 @@ const Bar: React.FC<Props> = ({ anchor, index, primaryIndex, setPrimary, setTool
 
         // Drop hover-primary so the priority cascade falls through to
         // cachedCenterIndex. We deliberately do NOT set a click-pin here.
-        // The earlier "click-pin for PIN_HOLD_MS then yield" design
-        // produced the visible 1 → 5 → 4 → 3 → 2 → 1 jump on long-
-        // distance clicks: pin held active=1 for 800ms, then expired
-        // MID-SCROLL and cachedCenterIndex (which was on bar 5 because
-        // the chat was still mid-animation) took over — so the active
-        // highlight jumped from 1 to 5, then tracked the rest of the
-        // scroll. Letting cachedCenterIndex drive active from t=0
-        // means the active highlight smoothly tracks the scroll
-        // (10 → 9 → 8 → … → 1) instead of pin-locking-then-jumping.
+        // Two earlier designs tried it and both produced visible jumps:
+        //   v1 "pin for PIN_HOLD_MS then yield" — pin held active=1 for
+        //     800ms, expired MID-SCROLL, cachedCenterIndex (on bar 5
+        //     because the chat was still mid-animation) took over, so
+        //     the highlight jumped from 1 → 5 and tracked the rest of
+        //     the scroll (10 → 9 → 8 → … → 1 looks fine, but 1 → 5 is
+        //     the jarring one).
+        //   v2 "click-pin forever, released only by TYPED_HOLD_MS gate"
+        //     — same problem; the 1.5s gate made it impossible to
+        //     wheel-scroll away from the pinned bar.
+        // Current design has no pin at all and no time gate. Active
+        // follows cachedCenterIndex naturally during the smooth-scroll,
+        // and computeCenterIndex's boundary clamp pins the result to
+        // 0/length-1 when the chat's scrollTop hits an extreme — so
+        // clicking bar 1 ends with active=1 (not some middle bar) and
+        // clicking bar N ends with active=N. The smooth 10 → 9 → 8
+        // → … → 1 transition happens because cachedCenterIndex tracks
+        // the scroll events frame-by-frame, not because of a pin.
         setHovered(null);
 
         onPick(anchor);

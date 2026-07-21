@@ -32,25 +32,15 @@ interface PanelProps {
 // the rail back to the active bar via the cachedCenterIndex fallback.
 let lastChatScrollAt = 0;
 
-// Window (ms) during which the chat's auto-scroll-to-bottom is allowed to
-// fire without recomputing cachedCenterIndex away from the newly-typed
-// message. After this window elapses, normal center-recompute resumes and
-// the active bar will follow the user's manual chat scroll as usual.
-// 1500ms is comfortably larger than ZCode's smooth-scroll animation
-// duration (often < 300ms) and also longer than typical "user is reading
-// what they just sent" attention span without committing to the new bar
-// becoming the permanent "closest-to-viewport-center" message.
-const TYPED_HOLD_MS = 1500;
-
-// runCenterCompute uses PIN_HOLD_MS (exported from store.ts, 800ms by
-// default) to gate cachedCenterIndex updates during the click → smooth-
-// scroll → pin window. We deliberately do NOT keep a separate
-// CLICK_HOLD_MS const here — the v1 design had a 400ms constant that
-// drifted out of sync with the click-pin's 140ms pre-delay + ~260ms
-// settle period, producing the "1 → 5 → 1" flicker (the gate expired
-// before the pin landed). The fix: a single PIN_HOLD_MS governs both
-// the click-pin window and the rail-freeze gate, so they can never
-// drift again.
+// Time-based holds for active-bar management were removed along with
+// the click-pin mechanism: the boundary-clamp in computeCenterIndex
+// (see comments there) handles both the "click first bar → active is
+// not bar 1" and "send new msg → active doesn't follow it" UX bugs
+// without needing a time window. Subscribing code below still snaps
+// cachedCenterIndex to the new last bar on length-grow — this
+// snapshot is the start-of-animation primary that the chat's smooth-
+// scroll events naturally confirm or override as scrollTop reaches
+// its max.
 
 const Panel: React.FC<PanelProps> = ({ anchors, primaryIndex, setPrimary, setTooltip, onBarClick }) => {
   // Rail element ref — used by the useEffect below to scrollIntoView the
@@ -225,12 +215,6 @@ interface TimelineInstance {
   root: Root;
   host: HTMLElement;
   cachedCenterIndex: number;
-  /** Timestamp (ms epoch) at which the user last added a new user message.
-   *  Used to suppress viewport-center recompute for a brief window after
-   *  typing so ZCode's chat auto-scroll-to-bottom doesn't drag the active
-   *  bar away from the newly-typed message. Cleared naturally by the
-   *  Date.now() - lastTypedAt < TYPED_HOLD_MS check in runCenterCompute. */
-  lastTypedAt: number;
   generation: number;
   unsubscribe: (() => void) | null;
   observers: {
@@ -285,6 +269,43 @@ const noopPick = (_a: MessageAnchor) => { /* scroll handled inside Bar */ };
 function computeCenterIndex(startFrom = -1): number {
   const { messages } = getState();
   if (!messages || messages.length === 0) return -1;
+
+  // Boundary clamp: when the chat scroll container is at one of its
+  // extremes, pin active to the corresponding edge message instead of
+  // letting center-tracking fall through to whichever message happens
+  // to be closest to viewport center. Two distinct UX bugs are fixed
+  // by this single check:
+  //   1. Click bar 1 (first user message): chat tries to scroll up to
+  //      center it, but scrollTop = 0 is the hard limit and msg 1
+  //      lands at viewport TOP, not center. Center-tracking then
+  //      "finds" whichever middle-bar's midpoint is closest to
+  //      viewport center and active jumps to a non-clicked bar.
+  //   2. Send a new message: chat auto-scrolls to bottom, the new
+  //      msg's midpoint sits below viewport center, an older msg
+  //      wins the center-distance search, and active lands on a bar
+  //      the user can't even see.
+  // Without this clamp there was no way to recover active=edge from
+  // the rule alone — the rule's spec excludes the boundary case by
+  // construction. VS Code's minimap slider and PDF.js's current-page
+  // indicator solve the same problem by being position- or set-
+  // aligned instead of center-aligned; we get an equivalent result
+  // by clamping the existing center-distance rule at scrollTop
+  // extremes.
+  //
+  // Range check (`scrollHeight > clientHeight + 50`): only fire the
+  // clamp when the chat is actually scrollable. On short chats that
+  // fit in the viewport, scrollTop is always 0 and scrollHeight ≈
+  // clientHeight — clamping here would permanently pin active = bar 1
+  // and break the "no-msg-at-center" case. Center-tracking handles
+  // short chats correctly because there's no clip to confuse it.
+  const chat = findChatContainer();
+  if (chat && chat.scrollHeight > chat.clientHeight + 50) {
+    if (chat.scrollTop <= 0) return 0;
+    if (chat.scrollTop + chat.clientHeight >= chat.scrollHeight - 1) {
+      return messages.length - 1;
+    }
+  }
+
   const center = window.innerHeight / 2;
   // Cheap fast-path: if startFrom is valid, check whether the same message
   // is still the closest to viewport center. Most consecutive scroll events
@@ -381,20 +402,19 @@ function attachScrollObservers(instance: TimelineInstance) {
   const runCenterCompute = () => {
     centerRafPending = false;
     if (instance.dead) return;
-    // Hold after a freshly-typed message: chat's auto-scroll-to-bottom
-    // fires a flurry of scroll events over the next ~200-500ms while the
-    // scrollIntoView animates. Letting each one run computeCenterIndex
-    // would peel cachedCenterIndex away from the newly-appended last bar
-    // (which we snap to in the subscribe handler) and let some older
-    // viewport-center message steal primary. Holding for a short window
-    // keeps the active bar pinned to the just-typed message while the
-    // user actually has a chance to see it highlighted.
-    if (Date.now() - instance.lastTypedAt < TYPED_HOLD_MS) return;
-    // (The previous "hold for PIN_HOLD_MS after a bar click so the
-    // chat's smooth-scrollIntoView events don't jostle the highlight"
-    // gate is removed along with the click-pin mechanism — without the
-    // pin there's no jostle to prevent, and the active highlight now
-    // follows the chat's scroll position naturally.)
+    // (Previously a time-based hold gated computeCenterIndex for
+    // TYPED_HOLD_MS = 1500ms after each typed message so ZCode's chat
+    // auto-scroll-to-bottom wouldn't peel cachedCenterIndex away from
+    // the newly-typed bar. That gate is gone: computeCenterIndex's
+    // boundary clamp now returns `messages.length - 1` whenever the
+    // chat scroll container is scrolled to its max, which is exactly
+    // the steady state ZCode settles into after auto-scrolling a new
+    // message. The first scroll events during the smooth-scroll
+    // animation may briefly yield an older bar, but the subscribe
+    // handler's start-of-animation snap sets cachedCenterIndex to
+    // the new last bar so the visual highlight is correct from the
+    // very first paint. Once scrollTop reaches max, the clamp takes
+    // over and every subsequent scroll event agrees with the snap.)
     const centerIdx = computeCenterIndex(instance.cachedCenterIndex);
 
     // (No pin-clear logic here — the click-pin mechanism was removed.
@@ -568,7 +588,6 @@ export function mountPanel() {
     root,
     host,
     cachedCenterIndex: computeCenterIndex(),
-    lastTypedAt: 0,
     generation: 0,
     unsubscribe: null,
     observers: { scroll: null, resize: null, ro: null, chatRoot: null },
@@ -597,13 +616,15 @@ export function mountPanel() {
       instance.lastMessagesLen = st.messages.length;
       if (lenGrew && st.messages.length > 0) {
         // The user just sent a new message — snap the active bar to the
-        // newly-appended last entry instead of running a viewport-center
-        // scan, which would land on whichever old message happens to be
-        // closest to chat-viewport center while ZCode is auto-scrolling
-        // the new message into view. Open a short hold window so the
-        // upcoming chat auto-scroll events don't steal primary back.
+        // newly-appended last entry. This covers the brief moment
+        // between this subscribe and the chat's auto-scroll firing its
+        // first scroll event: without the snap, renderOnce would briefly
+        // render the stale cachedCenterIndex (some pre-existing bar)
+        // before the first onScroll recompute arrives. Once ZCode's chat
+        // auto-scrolls to max, computeCenterIndex's boundary clamp
+        // returns the same `messages.length - 1` value independently,
+        // so the snap and the clamp converge.
         instance.cachedCenterIndex = st.messages.length - 1;
-        instance.lastTypedAt = Date.now();
       } else {
         // Reference change with same-or-shrinking length (session
         // switch, streaming mutation, deletion) — fall back to full
