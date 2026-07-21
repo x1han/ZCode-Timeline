@@ -6356,6 +6356,15 @@ async function main() {
   const noRestart = argv.includes("--no-restart");
   const skipBuild = argv.includes("--skip-build");
   log2("=== ZCode Timeline Installer ===");
+  if (process.platform !== "win32") {
+    err2("This installer is Windows-only. Detected platform: " + process.platform);
+    err2("macOS and Linux are not currently supported by the .exe release.");
+    err2("On macOS/Linux, use the dev launcher instead:");
+    err2("  git clone https://github.com/x1han/ZCode-Timeline");
+    err2("  cd ZCode-Timeline && npm install && npm run install");
+    pauseOnError();
+    process.exit(1);
+  }
   log2("Checking prerequisites...");
   const checks = [
     { name: "Node.js", cmd: "node", url: "https://nodejs.org/" },

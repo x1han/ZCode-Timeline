@@ -6339,6 +6339,14 @@ async function main() {
   const noClose = argv.includes("--no-close");
   const keepBundle = argv.includes("--keep-bundle");
   log2("=== ZCode Timeline Uninstaller ===");
+  if (process.platform !== "win32") {
+    err2("This uninstaller is Windows-only. Detected platform: " + process.platform);
+    err2("macOS and Linux are not currently supported by the .exe release.");
+    err2("On macOS/Linux, use the dev launcher instead:");
+    err2("  cd ~/.zcode-timeline && node launcher/install.mjs uninstall");
+    pauseOnError();
+    process.exit(1);
+  }
   log2("Detecting ZCode installation...");
   let zcodeInfo;
   try {
