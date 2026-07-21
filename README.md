@@ -1,3 +1,11 @@
+> ⚠️ **DEPRECATED** — ZCode 3.4.1 ships a built-in timeline panel that
+> covers this project's functionality. **This repository is no longer
+> maintained and no further releases are planned.**
+>
+> If you've already installed ZCode-Timeline and want to restore
+> ZCode's pristine `app.asar`, run the uninstaller `.exe` from any
+> release zip below, or `npm run uninstall` from a cloned checkout.
+
 # ZCode Timeline
 
 **A vertical session timeline for [ZCode](https://github.com/x1han), with click-to-jump and hover previews.**
